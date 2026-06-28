@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BenefProcess · Stefanini</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #EEF2F7;
+      color: #1A2332;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: linear-gradient(135deg, #0A1E3D 0%, #0F2A56 55%, #1A3A6B 100%);
+      padding: 16px 28px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      box-shadow: 0 3px 18px rgba(10,30,61,.3);
+    }
+    .header-icon {
+      width: 38px; height: 38px;
+      background: #00C2A0;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 19px;
+      box-shadow: 0 0 0 3px rgba(0,194,160,.25);
+      flex-shrink: 0;
+    }
+    .header-title { color: #fff; font-weight: 800; font-size: 17px; letter-spacing: -.4px; }
+    .header-sub   { color: rgba(255,255,255,.45); font-size: 10px; letter-spacing: 1.2px; margin-top: 1px; }
+    .header-date  { margin-left: auto; color: rgba(255,255,255,.35); font-size: 12px; }
+
+    /* ── Step bar ── */
+    .stepbar {
+      background: #fff;
+      border-bottom: 1px solid #E2E8F0;
+      padding: 0 28px;
+      display: flex;
+      overflow-x: auto;
+    }
+    .step-item {
+      display: flex; align-items: center; flex-shrink: 0; gap: 0;
+    }
+    .step-btn {
+      display: flex; align-items: center; gap: 7px;
+      padding: 13px 16px;
+      font-size: 13px; font-weight: 400;
+      color: #94A3B8;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+      transition: all .15s;
+    }
+    .step-btn.active { font-weight: 700; color: #0F2A56; border-bottom-color: #00C2A0; }
+    .step-btn.done   { color: #0F2A56; }
+    .step-num {
+      width: 21px; height: 21px; border-radius: 50%;
+      font-size: 10px; font-weight: 700;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: #E2E8F0; color: #94A3B8;
+      transition: all .15s;
+    }
+    .step-btn.active .step-num { background: #0F2A56; color: #fff; }
+    .step-btn.done   .step-num { background: #00C2A0; color: #fff; }
+    .step-sep { color: #CBD5E1; font-size: 14px; padding: 0 2px; }
+
+    /* ── Content ── */
+    .content { max-width: 860px; margin: 0 auto; padding: 28px 18px; }
+
+    /* ── Cards ── */
+    .card {
+      background: #fff; border-radius: 12px;
+      box-shadow: 0 1px 5px rgba(0,0,0,.08);
+      padding: 24px;
+    }
+    .card-compact { padding: 0; overflow: hidden; }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 10px 22px; border: none; border-radius: 8px;
+      font-weight: 600; font-size: 14px; cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    .btn:hover   { opacity: .9; }
+    .btn:active  { transform: scale(.98); }
+    .btn-primary { background: #0F2A56; color: #fff; }
+    .btn-teal    { background: #00C2A0; color: #fff; }
+    .btn-ghost   { background: #fff; color: #475569; border: 1px solid #CBD5E1; }
+    .btn-process { color: #fff; border: none; border-radius: 8px; padding: 10px 0;
+                   font-weight: 700; font-size: 13px; cursor: pointer; width: 100%;
+                   transition: opacity .15s; }
+    .btn-process:hover { opacity: .88; }
+    .btn-sm { padding: 9px 18px; font-size: 13px; }
+
+    /* ── Alerts ── */
+    .alert-err {
+      background: #FFF1F2; border: 1px solid #FCA5A5; color: #B91C1C;
+      border-radius: 8px; padding: 11px 16px; margin-bottom: 18px; font-size: 13px;
+    }
+    .alert-tip {
+      background: #FFFBEB; border: 1px solid #FDE68A; color: #92400E;
+      border-radius: 9px; padding: 13px 16px; margin-top: 20px; font-size: 12px; line-height: 1.5;
+    }
+    .alert-green {
+      background: #F0FDF9; border: 1px solid #A7F3D0; color: #065F46;
+      border-radius: 9px; padding: 14px 20px; font-size: 13px;
+      display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    }
+
+    /* ── Loading overlay ── */
+    #loading {
+      display: none;
+      position: fixed; inset: 0; z-index: 999;
+      background: rgba(10,30,61,.55);
+      align-items: center; justify-content: center;
+      flex-direction: column; gap: 14px;
+    }
+    #loading.show { display: flex; }
+    .spinner {
+      width: 42px; height: 42px;
+      border: 4px solid rgba(255,255,255,.25);
+      border-top-color: #00C2A0;
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { color: #fff; font-size: 14px; font-weight: 500; }
+
+    /* ── Benefit cards ── */
+    .benefit-cards { display: flex; gap: 12px; margin-bottom: 26px; }
+    .benefit-card {
+      flex: 1; background: #fff; border-radius: 10px;
+      border-top: 3px solid var(--c);
+      padding: 14px 16px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    }
+    .benefit-label { font-weight: 700; font-size: 13px; color: var(--c); margin-bottom: 5px; }
+    .benefit-rule  { font-size: 12px; color: #64748B; line-height: 1.55; }
+
+    /* ── Drop zone ── */
+    .dropzone {
+      border: 2px dashed #CBD5E1;
+      border-radius: 14px; padding: 62px 40px;
+      text-align: center; cursor: pointer;
+      background: #fff; transition: all .18s;
+    }
+    .dropzone:hover, .dropzone.drag { border-color: #00C2A0; background: #F0FDF9; }
+    .dropzone .icon  { font-size: 50px; margin-bottom: 12px; }
+    .dropzone .label { font-weight: 700; font-size: 16px; margin-bottom: 6px; }
+    .dropzone .sub   { color: #94A3B8; font-size: 13px; }
+
+    /* ── Sheet mapping ── */
+    .map-row {
+      display: flex; align-items: center; gap: 14px;
+      padding: 14px 0; border-bottom: 1px solid #F1F5F9;
+    }
+    .map-row:last-child { border-bottom: none; }
+    .map-label { width: 145px; font-size: 14px; font-weight: 600; flex-shrink: 0; }
+    .map-sep   { color: #94A3B8; font-size: 13px; flex-shrink: 0; }
+    .map-check { width: 20px; text-align: center; color: transparent; font-size: 17px; }
+    .map-check.ok { color: #10B981; }
+
+    select {
+      flex: 1; padding: 9px 12px; border-radius: 7px;
+      border: 1px solid #CBD5E1;
+      font-size: 13px; background: #fff; outline: none;
+      transition: border-color .15s, background .15s;
+    }
+    select.mapped { border-color: #86EFAC; background: #F0FDF4; }
+    select.missing { border-color: #FCA5A5; background: #FFF5F5; }
+
+    /* ── Column mapping ── */
+    .col-map-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 0; border-bottom: 1px solid #F1F5F9;
+    }
+    .col-map-row:last-child { border-bottom: none; }
+    .col-map-label { width: 250px; font-size: 13px; font-weight: 500; flex-shrink: 0; }
+    .col-map-label .optional { color: #94A3B8; font-size: 11px; }
+    .required-star { color: #EF4444; }
+
+    /* ── Preview table ── */
+    .table-wrap { overflow-x: auto; max-height: 290px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead tr { background: #F8FAFC; position: sticky; top: 0; z-index: 1; }
+    th {
+      padding: 10px 14px; text-align: left;
+      font-weight: 600; color: #64748B;
+      border-bottom: 2px solid #E2E8F0;
+      white-space: nowrap;
+    }
+    td { padding: 8px 14px; border-bottom: 1px solid #F1F5F9; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    tr:nth-child(even) td { background: #FAFBFC; }
+    .badge {
+      background: #EFF6FF; color: #1D4ED8;
+      font-size: 11px; padding: 2px 9px;
+      border-radius: 20px; font-weight: 700;
+    }
+    .table-more {
+      padding: 9px 14px; color: #94A3B8; font-size: 12px;
+      text-align: center; border-top: 1px solid #F1F5F9;
+    }
+
+    /* ── Group counts ── */
+    .group-counts { display: flex; gap: 10px; margin-bottom: 18px; }
+    .group-count {
+      flex: 1; border-radius: 9px; padding: 12px 0;
+      text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.07);
+      background: #fff;
+    }
+    .group-count.total-card { background: #0F2A56; }
+    .group-count .num  { font-size: 26px; font-weight: 800; color: #0F2A56; }
+    .group-count .lbl  { font-size: 11px; color: #64748B; margin-top: 3px; }
+    .group-count.total-card .num { color: #fff; }
+    .group-count.total-card .lbl { color: rgba(255,255,255,.55); }
+
+    /* ── Result cards ── */
+    .result-grid { display: flex; gap: 14px; margin-bottom: 18px; }
+    .result-card {
+      flex: 1; background: #fff; border-radius: 12px;
+      border-top: 3px solid var(--c);
+      padding: 20px 18px;
+      box-shadow: 0 1px 5px rgba(0,0,0,.08);
+    }
+    .result-title { font-weight: 800; font-size: 15px; color: var(--c); margin-bottom: 14px; }
+    .result-stats { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 4px; }
+    .stat-block .stat-label { font-size: 11px; color: #94A3B8; margin-bottom: 1px; }
+    .stat-block .stat-num   { font-weight: 800; font-size: 24px; line-height: 1; }
+    .stat-elig { color: #10B981; }
+    .stat-excl { color: #EF4444; }
+    .progress-bar { height: 5px; background: #F1F5F9; border-radius: 3px; margin-bottom: 14px; overflow: hidden; }
+    .progress-fill { height: 100%; background: var(--c); border-radius: 3px; }
+    .reasons-box { background: #F8FAFC; border-radius: 8px; padding: 9px 11px; margin-bottom: 14px; }
+    .reasons-title { font-size: 10px; font-weight: 700; color: #94A3B8; letter-spacing: .8px; margin-bottom: 6px; }
+    .reason-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 11px; color: #64748B; }
+    .reason-row span:last-child { font-weight: 700; color: #475569; margin-left: 6px; flex-shrink: 0; }
+    .reason-row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80%; }
+
+    /* ── Result banner ── */
+    .result-banner {
+      background: linear-gradient(135deg, #0A1E3D 0%, #0F2A56 60%, #1A3A6B 100%);
+      border-radius: 12px; padding: 20px 26px;
+      margin-bottom: 24px; color: #fff;
+      display: flex; align-items: center; gap: 16px;
+    }
+    .result-banner-icon {
+      width: 46px; height: 46px; background: #00C2A0;
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; flex-shrink: 0;
+    }
+    .result-banner h2 { font-weight: 800; font-size: 18px; margin-bottom: 3px; }
+    .result-banner p  { opacity: .6; font-size: 13px; }
+
+    /* ── Audit card ── */
+    .audit-card {
+      background: #fff; border-radius: 12px;
+      box-shadow: 0 1px 5px rgba(0,0,0,.08);
+      padding: 16px 22px; margin-bottom: 14px;
+      display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    }
+    .audit-card h4 { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+    .audit-card p  { font-size: 12px; color: #64748B; margin-top: 3px; }
+
+    /* ── Utilities ── */
+    .flex-end { display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end; }
+    .page-title { font-weight: 800; font-size: 23px; margin-bottom: 6px; letter-spacing: -.4px; }
+    .page-sub   { color: #64748B; font-size: 14px; line-height: 1.7; margin-bottom: 26px; }
+    .hidden { display: none !important; }
+    .wellhub-note {
+      margin-top: 14px; padding: 12px 16px;
+      background: #FDF2F8; border-radius: 9px; border: 1px solid #F9A8D4;
+      font-size: 12px; color: #9D174D; line-height: 1.5;
+    }
+    code { background: #F1F5F9; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+    .reset-btn { text-align: center; margin-top: 4px; }
+    /* ── Botão CSV ── */
+    .btn-csv {
+      display: block; width: 100%;
+      padding: 9px 0; margin-top: 8px;
+      background: transparent;
+      border: 2px solid var(--c);
+      border-radius: 8px;
+      color: var(--c);
+      font-weight: 700; font-size: 13px;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .btn-csv:hover { background: var(--c); color: #fff; }
+
+    /* ── Seção PPT / CSV global ── */
+    .extra-downloads {
+      background: #fff; border-radius: 12px;
+      box-shadow: 0 1px 5px rgba(0,0,0,.08);
+      padding: 16px 22px; margin-bottom: 14px;
+    }
+    .extra-downloads h4 {
+      font-weight: 700; font-size: 14px;
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 10px;
+    }
+    .extra-dl-grid {
+      display: flex; gap: 10px; flex-wrap: wrap;
+    }
+    .extra-dl-btn {
+      flex: 1; min-width: 160px;
+      padding: 10px 0; border: none; border-radius: 8px;
+      font-weight: 600; font-size: 13px; cursor: pointer;
+      transition: opacity .15s;
+    }
+    .extra-dl-btn:hover { opacity: .88; }
+
+  </style>
+</head>
+<body>
+
+<!-- ── Loading overlay ── -->
+<div id="loading">
+  <div class="spinner"></div>
+  <div class="loading-text" id="loadingText">Processando...</div>
+</div>
+
+<!-- ── Header ── -->
+<div class="header">
+  <div class="header-icon">⚡</div>
+  <div>
+    <div class="header-title">BenefProcess</div>
+    <div class="header-sub">TRATAMENTO DE BASES DE BENEFÍCIOS · STEFANINI</div>
+  </div>
+  <div class="header-date" id="headerDate"></div>
+</div>
+
+<!-- ── Step bar ── -->
+<div class="stepbar" id="stepbar">
+  <div class="step-item">
+    <div class="step-btn active" id="sb1"><span class="step-num">1</span>Upload</div>
+    <span class="step-sep">›</span>
+  </div>
+  <div class="step-item">
+    <div class="step-btn" id="sb2"><span class="step-num">2</span>Abas</div>
+    <span class="step-sep">›</span>
+  </div>
+  <div class="step-item">
+    <div class="step-btn" id="sb3"><span class="step-num">3</span>Colunas</div>
+    <span class="step-sep">›</span>
+  </div>
+  <div class="step-item">
+    <div class="step-btn" id="sb4"><span class="step-num">4</span>Revisão</div>
+    <span class="step-sep">›</span>
+  </div>
+  <div class="step-item">
+    <div class="step-btn" id="sb5"><span class="step-num">5</span>Resultado</div>
+  </div>
+</div>
+
+<!-- ── Content ── -->
+<div class="content">
+  <div id="alert" class="alert-err hidden"></div>
+
+  <!-- ════ STEP 1: Upload ════ -->
+  <div id="step1">
+    <h2 class="page-title">Envie a planilha de profissionais</h2>
+    <p class="page-sub">
+      Envie um arquivo <strong>.xlsx</strong> com <strong>3 abas</strong>:
+      <strong>Stefanini</strong>, <strong>Topaz</strong> e <strong>IHM</strong>.
+      O sistema consolida tudo e gera automaticamente as três bases tratadas.
+    </p>
+
+    <div class="benefit-cards">
+      <div class="benefit-card" style="--c:#5B4FE9">
+        <div class="benefit-label">TotalPass</div>
+        <div class="benefit-rule">Remove estagiários, aprendizes, terceiros e PJ</div>
+      </div>
+      <div class="benefit-card" style="--c:#E91E8C">
+        <div class="benefit-label">Wellhub</div>
+        <div class="benefit-rule">CLT com desconto em folha habilitado</div>
+      </div>
+      <div class="benefit-card" style="--c:#F59E0B">
+        <div class="benefit-label">New Value</div>
+        <div class="benefit-rule">Remove apenas PJ, mantém CLT e demais</div>
+      </div>
+    </div>
+
+    <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+      <div class="icon">📊</div>
+      <div class="label" id="dropLabel">Clique ou arraste a planilha aqui</div>
+      <div class="sub">Formatos aceitos: .xlsx · .xls</div>
+    </div>
+    <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none" />
+
+    <div class="alert-tip">
+      💡 <strong>Dica:</strong> Certifique-se de que as abas estejam nomeadas como
+      <strong>Stefanini</strong>, <strong>Topaz</strong> e <strong>IHM</strong> para mapeamento
+      automático. Nomes diferentes podem ser ajustados na próxima etapa.
+    </div>
+  </div>
+
+  <!-- ════ STEP 2: Sheet mapping ════ -->
+  <div id="step2" class="hidden">
+    <h2 class="page-title">Identificar as abas</h2>
+    <p class="page-sub" id="step2Sub"></p>
+
+    <div class="card">
+      <div class="map-row">
+        <div class="map-label">Grupo Stefanini</div>
+        <div class="map-sep">aba →</div>
+        <select id="sel-Stefanini" onchange="updateSheetSelect('Stefanini', this)">
+          <option value="">— Selecione a aba —</option>
+        </select>
+        <div class="map-check" id="chk-Stefanini">✓</div>
+      </div>
+      <div class="map-row">
+        <div class="map-label">Grupo Topaz</div>
+        <div class="map-sep">aba →</div>
+        <select id="sel-Topaz" onchange="updateSheetSelect('Topaz', this)">
+          <option value="">— Selecione a aba —</option>
+        </select>
+        <div class="map-check" id="chk-Topaz">✓</div>
+      </div>
+      <div class="map-row">
+        <div class="map-label">IHM</div>
+        <div class="map-sep">aba →</div>
+        <select id="sel-IHM" onchange="updateSheetSelect('IHM', this)">
+          <option value="">— Selecione a aba —</option>
+        </select>
+        <div class="map-check" id="chk-IHM">✓</div>
+      </div>
+    </div>
+
+    <div class="flex-end">
+      <button class="btn btn-ghost" onclick="goStep(1)">← Voltar</button>
+      <button class="btn btn-primary" onclick="confirmSheets()">Confirmar abas →</button>
+    </div>
+  </div>
+
+  <!-- ════ STEP 3: Column mapping per sheet ════ -->
+  <div id="step3" class="hidden">
+    <h2 class="page-title">Mapeamento de colunas</h2>
+    <p class="page-sub">
+      Cada aba pode ter nomes de colunas diferentes. Mapeie os campos para cada grupo abaixo.
+      Campos com <span class="required-star">*</span> são obrigatórios.
+    </p>
+
+    <div id="sheetTabsBar" style="display:flex;gap:8px;margin-bottom:16px"></div>
+    <div id="sheetTabsContent"></div>
+
+    <div class="wellhub-note" style="margin-top:14px">
+      🩷 <strong>Wellhub — Desconto em Folha:</strong> Valores aceitos:
+      <code>Sim</code>, <code>S</code>, <code>Ativo</code>, <code>Habilitado</code>,
+      <code>1</code>, <code>Yes</code>, <code>OK</code> (não diferencia maiúsculas/minúsculas).
+    </div>
+
+    <div class="flex-end">
+      <button class="btn btn-ghost" onclick="goStep(2)">← Voltar</button>
+      <button class="btn btn-primary" onclick="confirmColumns()">Confirmar →</button>
+    </div>
+  </div>
+
+  <!-- ════ STEP 4: Preview ════ -->
+  <div id="step4" class="hidden">
+    <h2 class="page-title">Revisão — base consolidada</h2>
+    <p class="page-sub" style="margin-bottom:18px">
+      Prévia dos primeiros registros de todas as abas. Confirme e clique em Processar.
+    </p>
+
+    <div class="group-counts" id="groupCounts"></div>
+
+    <div class="card card-compact">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Empresa</th><th>Nome</th><th>Matrícula</th>
+              <th>E-mail</th><th>Vínculo</th><th>Grupo</th>
+            </tr>
+          </thead>
+          <tbody id="previewTbody"></tbody>
+        </table>
+      </div>
+      <div class="table-more hidden" id="tableMore"></div>
+    </div>
+
+    <div class="flex-end">
+      <button class="btn btn-ghost" onclick="goStep(3)">← Voltar</button>
+      <button class="btn btn-teal" onclick="runProcess()">🚀 Processar bases</button>
+    </div>
+  </div>
+
+  <!-- ════ STEP 5: Results ════ -->
+  <div id="step5" class="hidden">
+    <div class="result-banner">
+      <div class="result-banner-icon">✅</div>
+      <div>
+        <h2>Processamento concluído!</h2>
+        <p id="resultSub"></p>
+      </div>
+    </div>
+
+    <div class="result-grid" id="resultCards"></div>
+
+
+
+    <div class="audit-card">
+      <div>
+        <h4>📋 Planilha de Auditoria</h4>
+        <p id="auditSub"></p>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="dl('auditoria')">⬇ Auditoria</button>
+    </div>
+    <div style="background:#fff;border-radius:12px;box-shadow:0 1px 5px rgba(0,0,0,.08);padding:16px 22px;margin-bottom:14px">
+      <div style="font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        📥 Downloads adicionais
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button style="flex:1;min-width:160px;padding:10px 0;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;background:#1A4A8A;color:#fff"
+                onclick="dl('auditppt')">📊 Apresentação PPT</button>
+      </div>
+    </div>
+
+    <div class="reset-btn">
+      <button class="btn btn-ghost" style="font-size:13px;color:#64748B" onclick="resetApp()">
+        ↺ Processar novo arquivo
+      </button>
+    </div>
+  </div>
+</div><!-- /content -->
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+const S = {
+  step: 1,
+  sessionId: null,
+  filename: '',
+  sheetNames: [],
+  sheetMap: { Stefanini: '', Topaz: '', IHM: '' },
+  sheetData: {},          // per-sheet: { headers, auto_map, row_count }
+  perSheetColMap: {},     // per-sheet column mapping
+  activeSheetTab: '',
+  previewRows: [],
+  results: null,
+};
+
+const COL_FIELDS = [
+  { key: 'empresa',        label: 'Empresa',                     req: true  },
+  { key: 'cnpj',          label: 'CNPJ da empresa',             req: true  },
+  { key: 'nome',          label: 'Nome do profissional',         req: true  },
+  { key: 'matricula',     label: 'Matrícula do profissional',    req: true  },
+  { key: 'email',         label: 'E-mail profissional',          req: true  },
+  { key: 'tipo_vinculo',  label: 'Tipo de vínculo',              req: false },
+  { key: 'data_admissao', label: 'Data de admissão',             req: false },
+  { key: 'cargo',         label: 'Nome do Cargo',                req: false },
+  { key: 'cpf',           label: 'CPF',                          req: false },
+  { key: 'desconto_folha',label: 'Desconto em folha (Wellhub)',  req: false },
+];
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+document.getElementById('headerDate').textContent = new Date().toLocaleDateString('pt-BR');
+
+// ─── Navigation ──────────────────────────────────────────────────────────────
+function goStep(n) {
+  for (let i = 1; i <= 5; i++) {
+    document.getElementById('step' + i).classList.toggle('hidden', i !== n);
+    const sb = document.getElementById('sb' + i);
+    sb.classList.remove('active', 'done');
+    if (i === n) sb.classList.add('active');
+    else if (i < n) {
+      sb.classList.add('done');
+      sb.querySelector('.step-num').textContent = '✓';
+    } else {
+      sb.querySelector('.step-num').textContent = i;
+    }
+  }
+  S.step = n;
+  clearAlert();
+  window.scrollTo(0, 0);
+}
+
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+function showAlert(msg) {
+  const el = document.getElementById('alert');
+  el.textContent = '⚠️ ' + msg;
+  el.classList.remove('hidden');
+}
+function clearAlert() { document.getElementById('alert').classList.add('hidden'); }
+
+// ─── Loading ──────────────────────────────────────────────────────────────────
+function showLoading(msg) {
+  document.getElementById('loadingText').textContent = msg || 'Processando...';
+  document.getElementById('loading').classList.add('show');
+}
+function hideLoading() { document.getElementById('loading').classList.remove('show'); }
+
+// ─── Step 1: Upload ───────────────────────────────────────────────────────────
+const dz = document.getElementById('dropzone');
+dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('drag');
+  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+});
+document.getElementById('fileInput').addEventListener('change', e => {
+  if (e.target.files[0]) uploadFile(e.target.files[0]);
+});
+
+async function uploadFile(file) {
+  if (!file.name.match(/\.(xlsx|xls)$/i)) {
+    showAlert('Formato inválido. Envie um arquivo .xlsx ou .xls.');
+    return;
+  }
+  showLoading('Lendo arquivo...');
+  const fd = new FormData();
+  fd.append('file', file);
+
+  try {
+    const res  = await fetch('/api/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.error) { hideLoading(); showAlert(data.error); return; }
+
+    S.sessionId   = data.session_id;
+    S.filename    = data.filename;
+    S.sheetNames  = data.sheet_names;
+    S.sheetMap    = { ...data.auto_sheet_map };
+
+    renderSheetSelects();
+    hideLoading();
+    goStep(2);
+  } catch (e) { hideLoading(); showAlert('Erro de conexão: ' + e.message); }
+}
+
+// ─── Step 2: Sheet mapping ────────────────────────────────────────────────────
+function renderSheetSelects() {
+  document.getElementById('step2Sub').innerHTML =
+    `<strong>${S.filename}</strong> · ${S.sheetNames.length} aba(s) encontrada(s). Confirme ou ajuste o mapeamento abaixo.`;
+
+  ['Stefanini', 'Topaz', 'IHM'].forEach(g => {
+    const sel = document.getElementById('sel-' + g);
+    sel.innerHTML = '<option value="">— Selecione a aba —</option>';
+    S.sheetNames.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s; opt.textContent = s;
+      if (S.sheetMap[g] === s) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    updateSheetSelect(g, sel);
+  });
+}
+
+function updateSheetSelect(grupo, sel) {
+  S.sheetMap[grupo] = sel.value;
+  const chk = document.getElementById('chk-' + grupo);
+  chk.classList.toggle('ok', !!sel.value);
+  sel.classList.toggle('mapped', !!sel.value);
+}
+
+async function confirmSheets() {
+  const missing = ['Stefanini', 'Topaz', 'IHM'].filter(g => !S.sheetMap[g]);
+  if (missing.length) { showAlert('Mapeie as abas: ' + missing.join(', ')); return; }
+
+  showLoading('Detectando colunas por aba...');
+  try {
+    const res  = await fetch('/api/get-columns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: S.sessionId, sheet_map: S.sheetMap }),
+    });
+    const data = await res.json();
+    if (data.error) { hideLoading(); showAlert(data.error); return; }
+
+    S.sheetData = data.sheet_data; // { Stefanini: { headers, auto_map, row_count }, ... }
+    // Init perSheetColMap with auto-detected values for each sheet
+    S.perSheetColMap = {};
+    for (const grupo of Object.keys(S.sheetData)) {
+      S.perSheetColMap[grupo] = { ...S.sheetData[grupo].auto_map };
+    }
+    S.activeSheetTab = Object.keys(S.sheetData)[0];
+
+    renderSheetTabs();
+    hideLoading();
+    goStep(3);
+  } catch (e) { hideLoading(); showAlert('Erro: ' + e.message); }
+}
+
+// ─── Step 3: Per-sheet column mapping ────────────────────────────────────────
+function renderSheetTabs() {
+  const tabBar     = document.getElementById('sheetTabsBar');
+  const tabContent = document.getElementById('sheetTabsContent');
+  tabBar.innerHTML = ''; tabContent.innerHTML = '';
+
+  const grupos = Object.keys(S.sheetData);
+
+  grupos.forEach(grupo => {
+    // Tab button
+    const btn = document.createElement('button');
+    btn.id        = 'tab-btn-' + grupo;
+    btn.className = 'btn btn-ghost';
+    btn.style.cssText = 'font-size:13px;padding:8px 18px;border-radius:8px;transition:all .15s';
+    const rc = S.sheetData[grupo].row_count;
+    btn.innerHTML = `${grupo} <span style="font-size:11px;opacity:.6">(${rc})</span>`;
+    btn.onclick   = () => switchSheetTab(grupo);
+    tabBar.appendChild(btn);
+
+    // Tab panel
+    const panel = document.createElement('div');
+    panel.id        = 'tab-panel-' + grupo;
+    panel.className = 'card hidden';
+
+    const headers = S.sheetData[grupo].headers;
+    const cm      = S.perSheetColMap[grupo] || {};
+
+    COL_FIELDS.forEach(f => {
+      const row = document.createElement('div');
+      row.className = 'col-map-row';
+
+      const lbl = document.createElement('div');
+      lbl.className = 'col-map-label';
+      lbl.innerHTML = f.label
+        + (f.req ? '<span class="required-star"> *</span>'
+                 : '<span class="optional"> (opcional)</span>');
+
+      const sel = document.createElement('select');
+      sel.id = `cm-${grupo}-${f.key}`;
+      sel.innerHTML = '<option value="">— Não mapeado —</option>';
+      headers.forEach(h => {
+        const opt = document.createElement('option');
+        opt.value = h; opt.textContent = h;
+        if (cm[f.key] === h) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      styleColSelect(sel, !!cm[f.key], f.req);
+      sel.addEventListener('change', () => {
+        S.perSheetColMap[grupo][f.key] = sel.value;
+        styleColSelect(sel, !!sel.value, f.req);
+        updateTabBadge(grupo);
+      });
+
+      const chk = document.createElement('span');
+      chk.style.cssText = `width:18px;font-size:16px;color:${cm[f.key] ? '#10B981' : 'transparent'}`;
+      chk.textContent = '✓';
+      sel.addEventListener('change', () => { chk.style.color = sel.value ? '#10B981' : 'transparent'; });
+
+      row.append(lbl, sel, chk);
+      panel.appendChild(row);
+    });
+
+    tabContent.appendChild(panel);
+  });
+
+  switchSheetTab(S.activeSheetTab);
+}
+
+function switchSheetTab(grupo) {
+  S.activeSheetTab = grupo;
+  Object.keys(S.sheetData).forEach(g => {
+    const btn   = document.getElementById('tab-btn-' + g);
+    const panel = document.getElementById('tab-panel-' + g);
+    const active = g === grupo;
+    panel.classList.toggle('hidden', !active);
+    btn.style.background    = active ? '#0F2A56' : '#fff';
+    btn.style.color         = active ? '#fff'    : '#475569';
+    btn.style.borderColor   = active ? '#0F2A56' : '#CBD5E1';
+  });
+}
+
+function updateTabBadge(grupo) {
+  // Visual feedback: tab turns green when required fields are mapped
+  const cm  = S.perSheetColMap[grupo] || {};
+  const ok  = COL_FIELDS.filter(f => f.req).every(f => cm[f.key]);
+  const btn = document.getElementById('tab-btn-' + grupo);
+  if (btn) btn.style.borderColor = ok ? '#10B981' : '#CBD5E1';
+}
+
+function styleColSelect(sel, mapped, req) {
+  sel.className = mapped ? 'mapped' : (req ? 'missing' : '');
+}
+
+function confirmColumns() {
+  // Validate required fields for each sheet
+  const errors = [];
+  for (const grupo of Object.keys(S.sheetData)) {
+    const cm = S.perSheetColMap[grupo] || {};
+    const missing = COL_FIELDS.filter(f => f.req && !cm[f.key]).map(f => f.label);
+    if (missing.length) errors.push(`${grupo}: ${missing.join(', ')}`);
+  }
+  if (errors.length) { showAlert('Mapeie os campos obrigatórios — ' + errors.join(' | ')); return; }
+  renderPreview();
+  goStep(4);
+}
+
+// ─── Step 4: Preview ─────────────────────────────────────────────────────────
+async function renderPreview() {
+  const grupos = ['Stefanini', 'Topaz', 'IHM'];
+
+  // Group counts from sheetData
+  const gc = document.getElementById('groupCounts');
+  gc.innerHTML = '';
+  let total = 0;
+  for (const [g, d] of Object.entries(S.sheetData)) {
+    total += d.row_count;
+    gc.innerHTML += `<div class="group-count"><div class="num">${d.row_count}</div><div class="lbl">${g}</div></div>`;
+  }
+  gc.innerHTML += `<div class="group-count total-card"><div class="num">${total}</div><div class="lbl">Total</div></div>`;
+
+  // Fetch preview rows from server
+  showLoading('Carregando prévia...');
+  try {
+    const res  = await fetch('/api/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id:        S.sessionId,
+        sheet_map:         S.sheetMap,
+        per_sheet_col_map: S.perSheetColMap,
+        col_map:           {},
+      }),
+    });
+    const data = await res.json();
+    hideLoading();
+    if (data.error) { showAlert(data.error); return; }
+
+    const tbody = document.getElementById('previewTbody');
+    tbody.innerHTML = '';
+    data.rows.forEach((row, i) => {
+      const tr = document.createElement('tr');
+      ['empresa','nome','matricula','email','tipo_vinculo'].forEach(k => {
+        const td = document.createElement('td');
+        td.textContent = row[k] || '—';
+        tr.appendChild(td);
+      });
+      const td = document.createElement('td');
+      td.innerHTML = `<span class="badge">${row._grupo}</span>`;
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    });
+
+    const more = document.getElementById('tableMore');
+    if (data.total > 15) {
+      more.textContent = `+ ${data.total - 15} registros adicionais não exibidos`;
+      more.classList.remove('hidden');
+    } else {
+      more.classList.add('hidden');
+    }
+  } catch (e) {
+    hideLoading();
+    // Show empty preview if endpoint fails
+    document.getElementById('previewTbody').innerHTML =
+      '<tr><td colspan="6" style="text-align:center;color:#94A3B8;padding:20px">Prévia não disponível</td></tr>';
+  }
+}
+
+// ─── Step 5: Process ─────────────────────────────────────────────────────────
+async function runProcess() {
+  showLoading('Aplicando regras de negócio...');
+  try {
+    const res  = await fetch('/api/process', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id:        S.sessionId,
+        sheet_map:         S.sheetMap,
+        per_sheet_col_map: S.perSheetColMap,
+        col_map:           {},
+      }),
+    });
+    const data = await res.json();
+    hideLoading();
+    if (data.error) { showAlert(data.error); return; }
+
+    S.results = data;
+    renderResults(data);
+    goStep(5);
+  } catch (e) { hideLoading(); showAlert('Erro: ' + e.message); }
+}
+
+function mkCard(label, color, eligible, excluded, reasons, extraHTML, btnLabel, dlKey, csvKey) {
+  const total = eligible + excluded;
+  const pct   = total > 0 ? Math.round((eligible / total) * 100) : 0;
+  let rHTML = '';
+  if (Object.keys(reasons).length) {
+    rHTML = `<div class="reasons-box"><div class="reasons-title">MOTIVOS DE EXCLUSÃO</div>
+      ${Object.entries(reasons).map(([r,n])=>`<div class="reason-row"><span>${r}</span><span>${n}</span></div>`).join('')}
+    </div>`;
+  }
+  const card = document.createElement('div');
+  card.className = 'result-card';
+  card.style.setProperty('--c', color);
+  card.innerHTML = `
+    <div class="result-title">${label}</div>
+    <div class="result-stats">
+      <div class="stat-block"><div class="stat-label">Elegíveis</div><div class="stat-num stat-elig">${eligible}</div></div>
+      <div class="stat-block" style="text-align:right"><div class="stat-label">Removidos</div><div class="stat-num stat-excl">${excluded}</div></div>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+    ${rHTML}${extraHTML}
+    <button class="btn-process" style="background:${color}" onclick="dl('${dlKey}')">${btnLabel}</button>
+    ${csvKey ? `<button class="btn-csv" style="--c:${color}" onclick="dl('${csvKey}')">⬇ Baixar CSV</button>` : ''}`;
+  return card;
+}
+
+function renderResults(data) {
+  document.getElementById('resultSub').textContent =
+    `${data.total} registros consolidados · Processado em ${new Date().toLocaleDateString('pt-BR')}`;
+  document.getElementById('auditSub').textContent =
+    `Todos os registros excluídos com motivo · ${data.audit_count} entradas`;
+
+  const grid = document.getElementById('resultCards');
+  grid.innerHTML = '';
+
+  // TotalPass
+  grid.appendChild(mkCard('TotalPass', '#5B4FE9', data.tp.eligible, data.tp.excluded,
+    data.tp.reasons, '', '⬇ Baixar TotalPass (Excel)', 'totalpass', 'totalpass_csv'));
+
+  // Wellhub — breakdown por empresa
+  const wh = data.wh;
+  const companies = wh.companies || [];
+  let compHTML = '';
+  if (companies.length) {
+    compHTML = `<div class="reasons-box" style="margin-bottom:14px">
+      <div class="reasons-title">${companies.length} EMPRESA(S) · 1 ARQUIVO POR CNPJ</div>
+      ${companies.map(c=>`<div class="reason-row">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:75%" title="${c.empresa}">${c.empresa}</span>
+        <span style="font-weight:700;color:#475569">${c.count}</span>
+      </div>`).join('')}
+    </div>`;
+  }
+  grid.appendChild(mkCard('Wellhub', '#E91E8C', wh.eligible, wh.excluded,
+    wh.reasons, compHTML,
+    `⬇ Baixar ZIP Excel (${companies.length} arquivo${companies.length!==1?'s':''})`, 'wellhub', 'wellhub_csv_zip'));
+
+  // New Value
+  grid.appendChild(mkCard('New Value', '#F59E0B', data.nv.eligible, data.nv.excluded,
+    data.nv.reasons, '', '⬇ Baixar New Value (Excel)', 'newvalue', 'newvalue_csv'));
+}
+
+// ─── Downloads ────────────────────────────────────────────────────────────────
+function dl(type) {
+  if (!S.sessionId) return;
+  window.location.href = `/api/download/${S.sessionId}/${type}`;
+}
+
+function downloadAll() {
+  dl('totalpass');
+  setTimeout(() => dl('wellhub'),   600);
+  setTimeout(() => dl('newvalue'), 1200);
+}
+
+function downloadAllCSV() {
+  dl('totalpass_csv');
+  setTimeout(() => dl('wellhub_csv_zip'),  600);
+  setTimeout(() => dl('newvalue_csv'),     1200);
+}
+
+// ─── Reset ───────────────────────────────────────────────────────────────────
+function resetApp() {
+  S.sessionId = null; S.filename = ''; S.sheetNames = [];
+  S.sheetMap  = { Stefanini: '', Topaz: '', IHM: '' };
+  S.sheetData = {}; S.perSheetColMap = {}; S.activeSheetTab = '';
+  S.previewRows = []; S.results = null;
+  document.getElementById('fileInput').value = '';
+  document.getElementById('dropLabel').textContent = 'Clique ou arraste a planilha aqui';
+  goStep(1);
+}
+</script>
+</body>
+</html>
