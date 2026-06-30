@@ -295,7 +295,7 @@ def apply_rules(df, col_map, process_name, check_fn):
         vinculo = clean_val(row[vinculo_col]) if vinculo_col and vinculo_col in row.index else ''
 
         if not email or not is_valid_email(email):
-            excluded_rows.append({**row.to_dict(), '_motivo': 'E-mail inválido ou ausente', '_processo': process_name})
+            excluded_rows.append({**row.to_dict(), '_motivo': 'E-mail ausente', '_processo': process_name})
             continue
 
         if adm is not None and is_future_date(adm):
@@ -835,6 +835,207 @@ def wellhub_csv_zip_filtered(session_id):
     return send_file(zip_path, as_attachment=True,
                      download_name=f'Wellhub_CSV_{len(selected)}_Empresas.zip')
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAR SAÚDE — fluxo independente, sem alterar nenhuma regra existente
+# ══════════════════════════════════════════════════════════════════════════════
+
+MAR_SAUDE_COLS = [
+    'Empresa', 'Nome Empresa', 'CNPJ Empresa', 'Célula',
+    'Desc. Atividade (Serviço)', 'Nome', 'Nome Social', 'Nome Cargo',
+    'Data de Admissão', 'Sexo', 'Data de Nascimento', 'Logradouro',
+    'Endereço', 'Complemento', 'Bairro', 'Cidade', 'Complemento CEP',
+    'E-mail Funcional', 'Número de CPF', 'Desc. Unidade Adm. (Cliente)',
+]
+
+MAR_SAUDE_COL_ALIASES = {
+    'empresa':       ['empresa'],
+    'nome_empresa':  ['nome empresa'],
+    'cnpj':         ['cnpj empresa', 'cnpj da empresa', 'cnpj'],
+    'celula':       ['célula', 'celula', 'centro de custo'],
+    'atividade':    ['desc. atividade (serviço)', 'desc. atividade', 'atividade', 'servico'],
+    'nome':         ['nome profissional', 'nome do profissional', 'nome'],
+    'nome_social':  ['nome social'],
+    'cargo':        ['nome cargo', 'nome função', 'nome funcao', 'cargo', 'função'],
+    'data_admissao':['admissão', 'admissao', 'data de admissão', 'data de admissao', 'dt admissão'],
+    'sexo':         ['sexo', 'gênero', 'genero'],
+    'dt_nascimento':['data de nascimento', 'nascimento', 'dt nascimento', 'data nascimento'],
+    'logradouro':   ['logradouro', 'tipo logradouro'],
+    'endereco':     ['endereço', 'endereco', 'rua', 'end'],
+    'complemento':  ['complemento'],
+    'bairro':       ['bairro'],
+    'cidade':       ['cidade', 'município', 'municipio'],
+    'cep':          ['complemento cep', 'cep', 'cod postal'],
+    'email':        ['e-mail funcional', 'email funcional', 'e-mail', 'email'],
+    'cpf':          ['número de cpf', 'cpf do profissional', 'cpf', 'nr cpf'],
+    'unidade_adm':  ['desc. unidade adm. (cliente)', 'desc. unidade adm', 'unidade adm'],
+    'tipo_vinculo': ['desc. tipo de vínculo', 'desc. tipo de vinculo',
+                     'desc. vínculo', 'desc. vinculo', 'vínculo', 'vinculo', 'regime'],
+}
+
+def _auto_map_ms(headers):
+    """Mapeamento automático usando aliases do Mar Saúde."""
+    mapping = {}
+    headers_lower = [(h, norm(h)) for h in headers]
+    for key, aliases in MAR_SAUDE_COL_ALIASES.items():
+        for alias in aliases:
+            for h, l in headers_lower:
+                if l == alias or l == alias.replace(' ', '_'):
+                    mapping[key] = h; break
+                if len(alias) >= 5 and alias in l:
+                    if key not in mapping: mapping[key] = h
+            if key in mapping: break
+    return mapping
+
+def _to_ms_row(row_dict, col_map):
+    """Converte linha para as 20 colunas do Mar Saúde."""
+    get = lambda k: clean_val(row_dict.get(col_map.get(k, '___ms___'), ''))
+    def _date(k):
+        col = col_map.get(k, '')
+        val = row_dict.get(col, '') if col else ''
+        try:
+            return format_date_val(parse_mixed_dates(val)) if val else ''
+        except Exception:
+            return clean_val(val)
+    return {
+        'Empresa':                      get('empresa'),
+        'Nome Empresa':                 get('nome_empresa'),
+        'CNPJ Empresa':                 get('cnpj'),
+        'Célula':                       get('celula'),
+        'Desc. Atividade (Serviço)':    get('atividade'),
+        'Nome':                         get('nome'),
+        'Nome Social':                  get('nome_social'),
+        'Nome Cargo':                   get('cargo'),
+        'Data de Admissão':             _date('data_admissao'),
+        'Sexo':                         get('sexo'),
+        'Data de Nascimento':           _date('dt_nascimento'),
+        'Logradouro':                   get('logradouro'),
+        'Endereço':                     get('endereco'),
+        'Complemento':                  get('complemento'),
+        'Bairro':                       get('bairro'),
+        'Cidade':                       get('cidade'),
+        'Complemento CEP':              get('cep'),
+        'E-mail Funcional':             get('email'),
+        'Número de CPF':                get('cpf'),
+        'Desc. Unidade Adm. (Cliente)': get('unidade_adm'),
+    }
+
+def _write_ms_csv(rows, filepath):
+    import csv
+    with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
+        w = csv.DictWriter(f, fieldnames=MAR_SAUDE_COLS, delimiter=';')
+        w.writeheader()
+        w.writerows(rows)
+
+@app.route('/api/upload-mar-saude', methods=['POST'])
+def api_upload_mar_saude():
+    if 'file' not in request.files:
+        return jsonify({'error': 'Nenhum arquivo enviado.'}), 400
+    f = request.files['file']
+    if not f.filename.lower().endswith(('.xlsx', '.xls')):
+        return jsonify({'error': 'Envie um arquivo .xlsx ou .xls.'}), 400
+    sid         = str(uuid.uuid4())
+    session_dir = os.path.join(TEMP_DIR, sid)
+    os.makedirs(session_dir, exist_ok=True)
+    upload_path = os.path.join(session_dir, 'ms_source.xlsx')
+    f.save(upload_path)
+    try:
+        xl = pd.ExcelFile(upload_path)
+        return jsonify({'session_id': sid, 'sheet_names': xl.sheet_names, 'filename': f.filename})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/get-columns-mar-saude', methods=['POST'])
+def api_get_columns_mar_saude():
+    data        = request.json
+    sid         = data.get('session_id')
+    sheet_name  = data.get('sheet_name')
+    upload_path = os.path.join(TEMP_DIR, sid, 'ms_source.xlsx')
+    if not os.path.exists(upload_path):
+        return jsonify({'error': 'Sessão expirada.'}), 400
+    try:
+        df = pd.ExcelFile(upload_path).parse(sheet_name, dtype=str, na_filter=False)
+        df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+        cols = list(df.columns)
+        return jsonify({'headers': cols, 'auto_map': _auto_map_ms(cols), 'row_count': len(df)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/process-mar-saude', methods=['POST'])
+def api_process_mar_saude():
+    data        = request.json
+    sid         = data.get('session_id')
+    sheet_name  = data.get('sheet_name')
+    col_map_usr = data.get('col_map', {})
+    upload_path = os.path.join(TEMP_DIR, sid, 'ms_source.xlsx')
+    if not os.path.exists(upload_path):
+        return jsonify({'error': 'Sessão expirada.'}), 400
+    try:
+        df = pd.ExcelFile(upload_path).parse(sheet_name, dtype=str, na_filter=False)
+        df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+        mask = df.apply(lambda row: row.str.strip().ne('').any(), axis=1)
+        df   = df[mask].reset_index(drop=True)
+
+        auto = _auto_map_ms(list(df.columns))
+        # col_map_usr sobrescreve o auto
+        final_map = {**auto, **{k: v for k, v in col_map_usr.items() if v}}
+
+        # Converte datas
+        for dk in ('data_admissao', 'dt_nascimento'):
+            col = final_map.get(dk)
+            if col and col in df.columns:
+                df[col] = df[col].apply(parse_mixed_dates)
+
+        vinculo_col = final_map.get('tipo_vinculo')
+        eligible, excluded = [], []
+        for _, row in df.iterrows():
+            vinculo = clean_val(row[vinculo_col]) if vinculo_col and vinculo_col in row.index else ''
+            vinculo_norm = norm(vinculo)
+            if vinculo_norm and any(k in vinculo_norm for k in PJ_KW):
+                excluded.append({'_motivo': 'Pessoa Jurídica (PJ)', **row.to_dict()})
+            else:
+                eligible.append(row.to_dict())
+
+        ms_rows  = [_to_ms_row(r, final_map) for r in eligible]
+        ex_rows  = [_to_ms_row(r, final_map) for r in excluded]
+
+        session_dir = os.path.join(TEMP_DIR, sid)
+        write_styled_excel(ms_rows, os.path.join(session_dir, 'ms_output.xlsx'),
+                           'Mar Saúde', MAR_SAUDE_COLS)
+        _write_ms_csv(ms_rows, os.path.join(session_dir, 'ms_output.csv'))
+        write_styled_excel(ex_rows, os.path.join(session_dir, 'ms_audit.xlsx'),
+                           'Excluídos', MAR_SAUDE_COLS)
+
+        return jsonify({
+            'total':    len(df),
+            'eligible': len(ms_rows),
+            'excluded': len(ex_rows),
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({'error': str(e), 'detail': traceback.format_exc()}), 500
+
+@app.route('/api/download/<session_id>/ms_excel')
+def download_ms_excel(session_id):
+    path = os.path.join(TEMP_DIR, session_id, 'ms_output.xlsx')
+    if os.path.exists(path):
+        return send_file(path, as_attachment=True, download_name='MarSaude_Elegiveis.xlsx')
+    return 'Arquivo não encontrado.', 404
+
+@app.route('/api/download/<session_id>/ms_csv')
+def download_ms_csv(session_id):
+    path = os.path.join(TEMP_DIR, session_id, 'ms_output.csv')
+    if os.path.exists(path):
+        return send_file(path, as_attachment=True, download_name='MarSaude_Elegiveis.csv')
+    return 'Arquivo não encontrado.', 404
+
+@app.route('/api/download/<session_id>/ms_audit')
+def download_ms_audit(session_id):
+    path = os.path.join(TEMP_DIR, session_id, 'ms_audit.xlsx')
+    if os.path.exists(path):
+        return send_file(path, as_attachment=True, download_name='MarSaude_Excluidos.xlsx')
+    return 'Arquivo não encontrado.', 404
+# ══════════════════════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     print('=' * 50)
     print('  BenefProcess — Tratamento de Benefícios')

@@ -363,9 +363,9 @@
   <div id="alert" class="alert-err hidden"></div>
 
   <!-- ════ STEP 1: Upload ════ -->
-  <div id="step1">
-    <h2 class="page-title">Envie a planilha de profissionais</h2>
-    <p class="page-sub">
+  <div id="step1"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><div><h2 class="page-title">Envie a planilha de profissionais</h2><p style="font-size:12px;color:#64748B;margin-bottom:12px">TotalPass · Wellhub · New Value — base com as 3 abas</p></div></div>
+    <!-- titulo movido acima -->
+    <p class="page-sub" style="display:none">
       Envie um arquivo <strong>.xlsx</strong> com <strong>3 abas</strong>:
       <strong>Stefanini</strong>, <strong>Topaz</strong> e <strong>IHM</strong>.
       O sistema consolida tudo e gera automaticamente as três bases tratadas.
@@ -965,5 +965,255 @@ function resetApp() {
   goStep(1);
 }
 </script>
+
+<!-- ══ MAR SAÚDE — Upload zone + Modal independente ══════════════════════ -->
+<div style="max-width:860px;margin:0 auto;padding:0 18px 28px">
+  <div style="background:#fff;border-radius:12px;box-shadow:0 1px 5px rgba(0,0,0,.08);
+              padding:24px;border-top:3px solid #0891B2">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <div style="width:32px;height:32px;background:#0891B2;border-radius:8px;
+                  display:flex;align-items:center;justify-content:center;font-size:16px">🏥</div>
+      <div>
+        <div style="font-weight:800;font-size:15px;color:#0F2A56">Mar Saúde</div>
+        <div style="font-size:11px;color:#64748B">Somente Stefanini · Remove apenas PJ · A cada 15 dias</div>
+      </div>
+    </div>
+    <div id="ms-dropzone"
+         style="border:2px dashed #BAE6FD;border-radius:10px;padding:28px 20px;
+                text-align:center;cursor:pointer;background:#F0F9FF;transition:all .18s;margin-top:12px"
+         onclick="document.getElementById('ms-file-input').click()"
+         ondragover="event.preventDefault();this.style.borderColor='#0891B2'"
+         ondragleave="this.style.borderColor='#BAE6FD'"
+         ondrop="event.preventDefault();this.style.borderColor='#BAE6FD';msUploadFile(event.dataTransfer.files[0])">
+      <div style="font-size:32px;margin-bottom:6px">📋</div>
+      <div id="ms-drop-label" style="font-weight:700;font-size:14px;color:#0F2A56">
+        Clique ou arraste a base da Stefanini aqui
+      </div>
+      <div style="font-size:12px;color:#64748B;margin-top:4px">Formatos aceitos: .xlsx · .xls</div>
+    </div>
+    <input type="file" id="ms-file-input" accept=".xlsx,.xls" style="display:none"
+           onchange="if(this.files[0]) msUploadFile(this.files[0])"/>
+  </div>
+</div>
+
+<!-- Modal Mar Saúde -->
+<div id="ms-modal" style="display:none;position:fixed;inset:0;z-index:1000;
+     background:rgba(10,30,61,.6);align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:16px;width:min(680px,96vw);
+              max-height:90vh;overflow-y:auto;padding:28px;position:relative">
+    <!-- Fechar -->
+    <button onclick="msCloseModal()"
+            style="position:absolute;top:16px;right:16px;border:none;background:#F1F5F9;
+                   border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+      <div style="width:36px;height:36px;background:#0891B2;border-radius:10px;
+                  display:flex;align-items:center;justify-content:center;font-size:18px">🏥</div>
+      <div>
+        <div style="font-weight:800;font-size:17px;color:#0F2A56">Mar Saúde</div>
+        <div id="ms-modal-filename" style="font-size:12px;color:#64748B"></div>
+      </div>
+    </div>
+
+    <!-- Passo A: Selecionar aba -->
+    <div id="ms-step-sheet">
+      <div style="font-weight:700;font-size:14px;color:#0F2A56;margin-bottom:10px">
+        Selecionar aba da planilha
+      </div>
+      <select id="ms-sheet-select" style="width:100%;padding:10px;border-radius:8px;
+              border:1px solid #CBD5E1;font-size:13px;margin-bottom:16px"></select>
+      <button onclick="msConfirmSheet()"
+              style="width:100%;padding:11px;background:#0891B2;color:#fff;border:none;
+                     border-radius:8px;font-weight:700;font-size:14px;cursor:pointer">
+        Confirmar aba →
+      </button>
+    </div>
+
+    <!-- Passo B: Mapeamento (só vínculo) -->
+    <div id="ms-step-cols" style="display:none">
+      <div style="font-weight:700;font-size:14px;color:#0F2A56;margin-bottom:4px">
+        Mapeamento de colunas
+      </div>
+      <div style="font-size:12px;color:#64748B;margin-bottom:14px">
+        Campos detectados automaticamente. Ajuste se necessário.
+      </div>
+      <div id="ms-col-rows" style="max-height:300px;overflow-y:auto"></div>
+      <div style="margin-top:16px;display:flex;gap:10px">
+        <button onclick="document.getElementById('ms-step-cols').style.display='none';
+                         document.getElementById('ms-step-sheet').style.display='block'"
+                style="flex:1;padding:10px;background:#F1F5F9;border:none;border-radius:8px;
+                       font-weight:600;font-size:13px;cursor:pointer">← Voltar</button>
+        <button onclick="msProcess()"
+                style="flex:2;padding:10px;background:#0F2A56;color:#fff;border:none;
+                       border-radius:8px;font-weight:700;font-size:13px;cursor:pointer">
+                🚀 Processar Mar Saúde</button>
+      </div>
+    </div>
+
+    <!-- Passo C: Resultado -->
+    <div id="ms-step-result" style="display:none">
+      <div style="background:#F0FDF9;border:1px solid #A7F3D0;border-radius:10px;
+                  padding:16px;margin-bottom:16px;text-align:center">
+        <div style="font-size:28px;margin-bottom:4px">✅</div>
+        <div style="font-weight:800;font-size:16px;color:#065F46">Processamento concluído!</div>
+        <div id="ms-result-sub" style="font-size:13px;color:#047857;margin-top:4px"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <button onclick="msDl('ms_excel')"
+                style="padding:12px;background:#0F2A56;color:#fff;border:none;border-radius:8px;
+                       font-weight:700;font-size:14px;cursor:pointer">
+                ⬇ Baixar Excel — Elegíveis (Mar Saúde)</button>
+        <button onclick="msDl('ms_csv')"
+                style="padding:12px;background:transparent;border:2px solid #0891B2;
+                       color:#0891B2;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer">
+                ⬇ Baixar CSV — Elegíveis (Mar Saúde)</button>
+        <button onclick="msDl('ms_audit')"
+                style="padding:12px;background:#F1F5F9;color:#475569;border:none;
+                       border-radius:8px;font-weight:600;font-size:13px;cursor:pointer">
+                ⬇ Planilha de Excluídos (PJ)</button>
+      </div>
+      <button onclick="msCloseModal()"
+              style="width:100%;margin-top:12px;padding:10px;background:transparent;
+                     border:1px solid #CBD5E1;border-radius:8px;font-size:13px;
+                     color:#64748B;cursor:pointer">Fechar</button>
+    </div>
+
+    <!-- Loading -->
+    <div id="ms-loading" style="display:none;text-align:center;padding:30px">
+      <div style="width:38px;height:38px;border:4px solid #E2E8F0;border-top-color:#0891B2;
+                  border-radius:50%;animation:spin .75s linear infinite;margin:0 auto 12px"></div>
+      <div style="color:#64748B;font-size:14px" id="ms-loading-text">Processando...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Estado Mar Saúde ─────────────────────────────────────────────────────────
+const MS = { sessionId: null, filename: '', sheetNames: [], selectedSheet: '', colMap: {} };
+
+const MS_FIELDS = [
+  { key: 'tipo_vinculo', label: 'Tipo de Vínculo (para filtrar PJ)', req: false },
+  { key: 'nome',         label: 'Nome do profissional',              req: false },
+  { key: 'cpf',          label: 'Número de CPF',                     req: false },
+  { key: 'email',        label: 'E-mail Funcional',                  req: false },
+  { key: 'data_admissao',label: 'Data de Admissão',                  req: false },
+  { key: 'cnpj',         label: 'CNPJ Empresa',                      req: false },
+  { key: 'nome_empresa', label: 'Nome Empresa',                      req: false },
+  { key: 'cargo',        label: 'Nome Cargo',                        req: false },
+  { key: 'celula',       label: 'Célula',                            req: false },
+  { key: 'atividade',    label: 'Desc. Atividade (Serviço)',          req: false },
+  { key: 'sexo',         label: 'Sexo',                              req: false },
+  { key: 'dt_nascimento',label: 'Data de Nascimento',                req: false },
+  { key: 'cidade',       label: 'Cidade',                            req: false },
+  { key: 'unidade_adm',  label: 'Desc. Unidade Adm. (Cliente)',      req: false },
+];
+
+function msShowLoading(txt) {
+  document.getElementById('ms-loading-text').textContent = txt || 'Processando...';
+  ['ms-step-sheet','ms-step-cols','ms-step-result'].forEach(id =>
+    document.getElementById(id).style.display = 'none');
+  document.getElementById('ms-loading').style.display = 'block';
+}
+function msHideLoading() { document.getElementById('ms-loading').style.display = 'none'; }
+
+function msOpenModal() {
+  const m = document.getElementById('ms-modal');
+  m.style.display = 'flex';
+  document.getElementById('ms-step-sheet').style.display = 'block';
+  document.getElementById('ms-step-cols').style.display = 'none';
+  document.getElementById('ms-step-result').style.display = 'none';
+}
+function msCloseModal() {
+  document.getElementById('ms-modal').style.display = 'none';
+}
+
+async function msUploadFile(file) {
+  if (!file) return;
+  if (!file.name.match(/\.(xlsx|xls)$/i)) {
+    alert('Envie um arquivo .xlsx ou .xls.');
+    return;
+  }
+  document.getElementById('ms-drop-label').textContent = file.name;
+  msShowLoading('Lendo arquivo...');
+  msOpenModal();
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res  = await fetch('/api/upload-mar-saude', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.error) { msHideLoading(); alert('Erro: ' + data.error); return; }
+    MS.sessionId  = data.session_id;
+    MS.filename   = data.filename;
+    MS.sheetNames = data.sheet_names;
+    document.getElementById('ms-modal-filename').textContent = data.filename;
+    const sel = document.getElementById('ms-sheet-select');
+    sel.innerHTML = MS.sheetNames.map(s => `<option value="${s}">${s}</option>`).join('');
+    msHideLoading();
+    document.getElementById('ms-step-sheet').style.display = 'block';
+  } catch(e) { msHideLoading(); alert('Erro: ' + e.message); }
+}
+
+async function msConfirmSheet() {
+  MS.selectedSheet = document.getElementById('ms-sheet-select').value;
+  msShowLoading('Detectando colunas...');
+  try {
+    const res  = await fetch('/api/get-columns-mar-saude', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ session_id: MS.sessionId, sheet_name: MS.selectedSheet })
+    });
+    const data = await res.json();
+    if (data.error) { msHideLoading(); alert('Erro: ' + data.error); return; }
+    MS.colMap = data.auto_map;
+    const headers = data.headers;
+    // Renderiza campos de mapeamento
+    const container = document.getElementById('ms-col-rows');
+    container.innerHTML = '';
+    MS_FIELDS.forEach(f => {
+      const div = document.createElement('div');
+      div.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #F1F5F9';
+      const lbl = document.createElement('div');
+      lbl.style.cssText = 'width:220px;font-size:12px;font-weight:500;flex-shrink:0;color:#374151';
+      lbl.textContent = f.label;
+      const sel = document.createElement('select');
+      sel.style.cssText = 'flex:1;padding:7px;border-radius:6px;border:1px solid #CBD5E1;font-size:12px';
+      sel.innerHTML = '<option value="">— Não mapeado —</option>' +
+        headers.map(h => `<option value="${h}" ${MS.colMap[f.key]===h?'selected':''}>${h}</option>`).join('');
+      sel.addEventListener('change', () => { MS.colMap[f.key] = sel.value; });
+      div.append(lbl, sel);
+      container.appendChild(div);
+    });
+    msHideLoading();
+    document.getElementById('ms-step-cols').style.display = 'block';
+  } catch(e) { msHideLoading(); alert('Erro: ' + e.message); }
+}
+
+async function msProcess() {
+  msShowLoading('Aplicando regras de exclusão...');
+  try {
+    const res  = await fetch('/api/process-mar-saude', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        session_id:  MS.sessionId,
+        sheet_name:  MS.selectedSheet,
+        col_map:     MS.colMap,
+      })
+    });
+    const data = await res.json();
+    if (data.error) { msHideLoading(); alert('Erro: ' + data.error); return; }
+    msHideLoading();
+    document.getElementById('ms-result-sub').textContent =
+      `${data.total} registros · ${data.eligible} elegíveis · ${data.excluded} PJs excluídos`;
+    document.getElementById('ms-step-result').style.display = 'block';
+  } catch(e) { msHideLoading(); alert('Erro: ' + e.message); }
+}
+
+function msDl(type) {
+  if (!MS.sessionId) return;
+  window.location.href = `/api/download/${MS.sessionId}/${type}`;
+}
+</script>
+
 </body>
 </html>
