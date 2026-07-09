@@ -303,6 +303,392 @@
       font-weight:600; font-size:12px; cursor:pointer;
     }
 
+    /* Modern executive visual layer */
+    :root {
+      --navy: #0B1F3A;
+      --navy-2: #123766;
+      --teal: #00B894;
+      --surface: #FFFFFF;
+      --surface-soft: #F8FAFC;
+      --border: #D9E2EF;
+      --text: #102033;
+      --muted: #6B7A90;
+      --shadow-sm: 0 8px 22px rgba(15, 35, 65, .08);
+      --shadow-md: 0 14px 34px rgba(15, 35, 65, .12);
+    }
+
+    body {
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(0, 184, 148, .12), transparent 28%),
+        linear-gradient(180deg, #F5F8FC 0%, #EAF0F7 100%);
+    }
+
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      min-height: 72px;
+      padding: 18px 34px;
+      background:
+        linear-gradient(135deg, rgba(11, 31, 58, .98) 0%, rgba(18, 55, 102, .98) 100%);
+      box-shadow: 0 16px 36px rgba(11, 31, 58, .22);
+    }
+    .header-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #00D6A3, #00A3B8);
+      box-shadow: 0 10px 24px rgba(0, 194, 160, .32);
+    }
+    .header-title {
+      font-size: 19px;
+      letter-spacing: 0;
+    }
+    .header-sub {
+      color: rgba(255,255,255,.64);
+      letter-spacing: 1px;
+    }
+    .header-date {
+      color: rgba(255,255,255,.62);
+      font-weight: 600;
+    }
+
+    .stepbar {
+      position: sticky;
+      top: 72px;
+      z-index: 19;
+      padding: 0 34px;
+      background: rgba(255,255,255,.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(217,226,239,.9);
+      box-shadow: 0 8px 18px rgba(15,35,65,.04);
+    }
+    .step-btn {
+      padding: 15px 18px;
+      color: #7C8BA0;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+    .step-btn.active {
+      color: var(--navy);
+      border-bottom-color: var(--teal);
+    }
+    .step-num {
+      width: 24px;
+      height: 24px;
+      background: #E7EDF5;
+    }
+    .step-btn.active .step-num {
+      background: var(--navy);
+    }
+    .step-btn.done .step-num {
+      background: var(--teal);
+    }
+
+    .content {
+      max-width: 1180px;
+      padding: 34px 28px;
+    }
+    .page-title {
+      font-size: 28px;
+      letter-spacing: 0;
+      color: var(--navy);
+    }
+    .page-sub {
+      max-width: 880px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .card,
+    .result-card,
+    .audit-card,
+    .group-count,
+    .benefit-card,
+    .expert-card {
+      border: 1px solid rgba(217,226,239,.82);
+      box-shadow: var(--shadow-sm);
+    }
+    .card,
+    .audit-card {
+      border-radius: 16px;
+    }
+    .card:hover,
+    .result-card:hover,
+    .audit-card:hover,
+    .benefit-card:hover,
+    .expert-card:hover {
+      box-shadow: var(--shadow-md);
+    }
+
+    .benefit-cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .benefit-card {
+      border-top-width: 4px;
+      padding: 18px;
+    }
+    .benefit-label {
+      font-size: 15px;
+    }
+
+    .dropzone {
+      border-color: #B9C7D9;
+      border-radius: 20px;
+      padding: 74px 42px;
+      background:
+        linear-gradient(#fff, #fff) padding-box,
+        linear-gradient(135deg, rgba(0,184,148,.65), rgba(15,42,86,.35)) border-box;
+      box-shadow: var(--shadow-sm);
+    }
+    .dropzone:hover,
+    .dropzone.drag {
+      border-color: var(--teal);
+      background: #F5FFFC;
+      transform: translateY(-1px);
+    }
+    .dropzone .label {
+      color: var(--navy);
+      font-size: 18px;
+    }
+
+    .btn {
+      border-radius: 10px;
+      font-weight: 750;
+      box-shadow: 0 8px 16px rgba(15, 35, 65, .08);
+      transition: transform .14s ease, box-shadow .14s ease, opacity .14s ease;
+    }
+    .btn:hover {
+      box-shadow: 0 12px 24px rgba(15, 35, 65, .12);
+      transform: translateY(-1px);
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--navy), var(--navy-2));
+    }
+    .btn-teal {
+      background: linear-gradient(135deg, #00C2A0, #00A98B);
+    }
+    .btn-ghost {
+      background: #fff;
+      border-color: var(--border);
+      color: var(--navy);
+    }
+    .btn-process,
+    .expert-dl-btn {
+      min-height: 44px;
+      border-radius: 10px;
+      box-shadow: 0 10px 18px rgba(15, 35, 65, .10);
+      transition: transform .14s ease, box-shadow .14s ease, opacity .14s ease;
+    }
+    .btn-process:hover,
+    .expert-dl-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 14px 26px rgba(15, 35, 65, .14);
+    }
+
+    select {
+      min-height: 42px;
+      border-radius: 10px;
+      border-color: var(--border);
+      color: var(--text);
+    }
+    select:focus {
+      border-color: var(--teal);
+      box-shadow: 0 0 0 4px rgba(0,184,148,.13);
+    }
+
+    .result-banner {
+      border-radius: 18px;
+      padding: 24px 30px;
+      background:
+        linear-gradient(135deg, rgba(11,31,58,.98), rgba(18,55,102,.98)),
+        radial-gradient(circle at right, rgba(0,194,160,.28), transparent 36%);
+      box-shadow: var(--shadow-md);
+    }
+    .result-banner h2 {
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+    .result-banner p {
+      opacity: .72;
+    }
+
+    .result-grid {
+      display: grid;
+      grid-template-columns: minmax(245px, .85fr) minmax(360px, 1.6fr) minmax(245px, .85fr);
+      align-items: stretch;
+      gap: 16px;
+    }
+    .result-card {
+      border-radius: 18px;
+      border-top-width: 4px;
+      padding: 24px 22px;
+    }
+    .result-title {
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    .stat-block .stat-num {
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+    .progress-bar {
+      height: 6px;
+      border-radius: 999px;
+    }
+    .progress-fill {
+      border-radius: 999px;
+    }
+    .reasons-box {
+      background: #F6F8FB;
+      border: 1px solid #EDF2F7;
+      border-radius: 12px;
+      padding: 13px 14px;
+    }
+    .reasons-title {
+      color: #8291A8;
+      letter-spacing: 1px;
+    }
+    .reason-row {
+      font-size: 12px;
+      padding: 4px 0;
+    }
+
+    .alert-green {
+      border-radius: 14px;
+      background: #ECFDF8;
+      box-shadow: var(--shadow-sm);
+    }
+    .audit-card {
+      padding: 18px 22px;
+    }
+    .audit-card h4 {
+      color: var(--navy);
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .group-counts {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .group-count {
+      border-radius: 14px;
+      padding: 16px 10px;
+    }
+    .group-count.total-card {
+      background: linear-gradient(135deg, var(--navy), var(--navy-2));
+    }
+
+    .table-wrap {
+      max-height: 360px;
+      border-radius: 14px;
+    }
+    table {
+      font-size: 12.5px;
+    }
+    thead tr {
+      background: #F3F6FA;
+    }
+    th {
+      color: #536176;
+      letter-spacing: 0;
+    }
+    td {
+      padding-top: 10px;
+      padding-bottom: 10px;
+    }
+
+    #marSaudeSection,
+    #expertSection {
+      max-width: 1180px;
+    }
+    #marSaudeSection > div,
+    #expertSection > div {
+      border-top-color: rgba(217,226,239,.9) !important;
+    }
+    .expert-section,
+    .expert-card {
+      border-radius: 18px;
+    }
+    .expert-badge {
+      background: linear-gradient(135deg, #6D5DF6, #4F46E5);
+      border-radius: 999px;
+      letter-spacing: .7px;
+    }
+    .expert-result-grid {
+      gap: 16px;
+    }
+    .expert-num {
+      font-size: 34px;
+      letter-spacing: 0;
+    }
+
+    @media (max-width: 980px) {
+      .content,
+      #marSaudeSection,
+      #expertSection {
+        max-width: 100%;
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+      .result-grid,
+      .benefit-cards,
+      .group-counts {
+        grid-template-columns: 1fr;
+      }
+      .result-card,
+      .expert-card {
+        min-width: 0;
+      }
+      .map-row,
+      .col-map-row {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .map-label,
+      .col-map-label {
+        width: auto;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .header {
+        padding: 14px 18px;
+      }
+      .header-date {
+        display: none;
+      }
+      .stepbar {
+        top: 64px;
+        padding: 0 12px;
+      }
+      .step-btn {
+        padding: 12px 10px;
+        font-size: 12px;
+      }
+      .dropzone {
+        padding: 46px 18px;
+      }
+      .alert-green,
+      .audit-card {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .flex-end {
+        flex-direction: column;
+      }
+      .flex-end .btn,
+      .audit-card .btn,
+      .alert-green .btn {
+        width: 100%;
+      }
+    }
+
   </style>
 </head>
 <body>
@@ -502,6 +888,19 @@
         <p id="auditSub"></p>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="dl('auditoria')">⬇ Auditoria</button>
+    </div>
+
+    <div class="audit-card" style="display:block">
+      <div style="margin-bottom:12px">
+        <h4>Downloads adicionais</h4>
+        <p>Arquivos CSV nos layouts dos clientes e apresentacao executiva da analise.</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+        <button class="btn btn-primary btn-sm" onclick="dl('totalpass_csv')">TotalPass - CSV</button>
+        <button class="btn btn-sm" style="background:#E91E8C;color:#fff" onclick="dl('wellhub_csv_zip')">Wellhub - ZIP CSV</button>
+        <button class="btn btn-sm" style="background:#F59E0B;color:#fff" onclick="dl('newvalue_csv')">New Value - CSV</button>
+        <button class="btn btn-sm" style="background:#1D4E89;color:#fff" onclick="dl('auditppt')">Apresentacao PPT</button>
+      </div>
     </div>
 
     <div class="reset-btn">
@@ -963,7 +1362,7 @@ async function runProcess() {
   } catch (e) { hideLoading(); showAlert('Erro: ' + e.message); }
 }
 
-function mkCard(label, color, eligible, excluded, reasons, extraHTML, btnLabel, dlKey) {
+function mkCard(label, color, eligible, excluded, reasons, extraHTML, btnLabel, dlKey, csvLabel, csvDlKey) {
   const total = eligible + excluded;
   const pct   = total > 0 ? Math.round((eligible / total) * 100) : 0;
   let rHTML = '';
@@ -983,7 +1382,8 @@ function mkCard(label, color, eligible, excluded, reasons, extraHTML, btnLabel, 
     </div>
     <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
     ${rHTML}${extraHTML}
-    <button class="btn-process" style="background:${color}" onclick="dl('${dlKey}')">${btnLabel}</button>`;
+    <button class="btn-process" style="background:${color}" onclick="dl('${dlKey}')">${btnLabel}</button>
+    ${csvDlKey ? `<button class="btn-process" style="background:${color};margin-top:10px;filter:saturate(.85);opacity:.9" onclick="dl('${csvDlKey}')">${csvLabel}</button>` : ''}`;
   return card;
 }
 
@@ -998,7 +1398,7 @@ function renderResults(data) {
 
   // TotalPass
   grid.appendChild(mkCard('TotalPass', '#5B4FE9', data.tp.eligible, data.tp.excluded,
-    data.tp.reasons, '', '⬇ Baixar TotalPass', 'totalpass'));
+    data.tp.reasons, '', 'Baixar Excel', 'totalpass', 'Baixar CSV TotalPass', 'totalpass_csv'));
 
   // Wellhub — breakdown por empresa
   const wh = data.wh;
@@ -1015,11 +1415,12 @@ function renderResults(data) {
   }
   grid.appendChild(mkCard('Wellhub', '#E91E8C', wh.eligible, wh.excluded,
     wh.reasons, compHTML,
-    `⬇ Baixar ZIP (${companies.length} arquivo${companies.length!==1?'s':''})`, 'wellhub'));
+    `Baixar ZIP Excel (${companies.length} arquivo${companies.length!==1?'s':''})`, 'wellhub',
+    `Baixar ZIP CSV (${companies.length} arquivo${companies.length!==1?'s':''})`, 'wellhub_csv_zip'));
 
   // New Value
   grid.appendChild(mkCard('New Value', '#F59E0B', data.nv.eligible, data.nv.excluded,
-    data.nv.reasons, '', '⬇ Baixar New Value', 'newvalue'));
+    data.nv.reasons, '', 'Baixar Excel', 'newvalue', 'Baixar CSV New Value', 'newvalue_csv'));
 }
 
 // ─── Downloads ────────────────────────────────────────────────────────────────

@@ -285,13 +285,30 @@ def _load_and_rename(xl, sheet_map, per_sheet_map):
     # chave porque é único por pessoa; matrícula pode repetir entre empresas.
     cpf_col = '_f_cpf'
     if cpf_col in consolidated.columns:
-        # Normaliza o CPF (remove pontuação) para comparação antes de deduplicar
-        cpf_norm = consolidated[cpf_col].apply(
+        consolidated['_dedupe_cpf_norm'] = consolidated[cpf_col].apply(
             lambda v: CPF_CLEAN.sub('', str(v)) if clean_val(v) else ''
         )
-        consolidated = consolidated[cpf_norm.ne('') & ~cpf_norm.duplicated(keep='first')]
-        consolidated = consolidated.reset_index(drop=True)
+        consolidated['_dedupe_original_order'] = range(len(consolidated))
+        consolidated = consolidated[consolidated['_dedupe_cpf_norm'].ne('')].copy()
 
+        vinculo_col = '_f_tipo_vinculo'
+        if vinculo_col in consolidated.columns:
+            # Mesmo CPF em mais de uma aba: se existir uma ocorrencia nao-PJ,
+            # ela tem prioridade. Se todas forem PJ, a regra remove normalmente.
+            consolidated['_dedupe_pj_rank'] = consolidated[vinculo_col].apply(
+                lambda v: 1 if any(k in norm_ascii(v) for k in PJ_KW) else 0
+            )
+            consolidated = consolidated.sort_values(
+                ['_dedupe_cpf_norm', '_dedupe_pj_rank', '_dedupe_original_order']
+            )
+            consolidated = consolidated.drop_duplicates('_dedupe_cpf_norm', keep='first')
+            consolidated = consolidated.sort_values('_dedupe_original_order')
+            consolidated = consolidated.drop(columns=['_dedupe_pj_rank'])
+        else:
+            consolidated = consolidated.drop_duplicates('_dedupe_cpf_norm', keep='first')
+
+        consolidated = consolidated.drop(columns=['_dedupe_cpf_norm', '_dedupe_original_order'])
+        consolidated = consolidated.reset_index(drop=True)
     return consolidated
 
 
