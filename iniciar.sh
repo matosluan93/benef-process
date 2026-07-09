@@ -12,16 +12,20 @@ if [ ! -f "venv/Scripts/python.exe" ] && [ ! -f "venv/bin/python" ]; then
     echo "[1/3] Criando ambiente virtual..."
     py -m venv venv 2>/dev/null || python3 -m venv venv
     echo ""
-
-    echo "[2/3] Instalando dependencias..."
-    source venv/Scripts/activate 2>/dev/null || source venv/bin/activate
-    pip install -r requirements.txt --quiet
-    echo ""
 else
-    echo "Ambiente virtual encontrado."
-    source venv/Scripts/activate 2>/dev/null || source venv/bin/activate
+    echo "[1/3] Ambiente virtual encontrado."
     echo ""
 fi
+
+source venv/Scripts/activate 2>/dev/null || source venv/bin/activate
+echo "[2/3] Conferindo dependencias..."
+pip install -r requirements.txt --quiet
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "ERRO: Falha ao instalar dependencias."
+    exit 1
+fi
+echo ""
 
 echo "[3/3] Iniciando servidor..."
 echo ""

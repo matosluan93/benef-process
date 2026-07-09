@@ -3,6 +3,7 @@ import uuid
 import re
 import json
 import zipfile
+import unicodedata
 from datetime import date
 from ppt_generator import generate as generate_ppt
 from flask import Flask, request, jsonify, render_template, send_file
@@ -11,7 +12,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
 
 TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -91,6 +92,14 @@ def norm(v):
     """Lowercase + strip + remove BOM invisível (\\ufeff) de cabeçalhos ERP."""
     return str(v or '').strip().lstrip('\ufeff').lower()
 
+def norm_ascii(v):
+    """Normaliza texto para comparações sem acento, mantendo símbolos comuns."""
+    txt = norm(v).replace('ï»¿', '')
+    return ''.join(
+        ch for ch in unicodedata.normalize('NFKD', txt)
+        if not unicodedata.combining(ch)
+    )
+
 def clean_val(v):
     """
     Retorna string limpa. Trata isna() com try/except para não quebrar
@@ -115,6 +124,18 @@ def format_cpf(v):
     if len(raw) == 11:
         return f'{raw[:3]}.{raw[3:6]}.{raw[6:9]}-{raw[9:]}'
     return clean_val(v)
+
+
+def format_cnpj(v):
+    """Formata CNPJ como XX.XXX.XXX/XXXX-XX, corrigindo zeros à esquerda."""
+    digits = ''.join(filter(str.isdigit, str(v or '')))
+    if not digits:
+        return str(v or '').strip()
+    digits = digits.zfill(14)
+    if len(digits) == 14:
+        return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
+    return str(v or '').strip()
+
 
 # ─── Parsing de datas ─────────────────────────────────────────────────────────
 
@@ -289,43 +310,45 @@ def apply_rules(df, col_map, process_name, check_fn):
     admissao_col = col_map.get('data_admissao')
     vinculo_col  = col_map.get('tipo_vinculo')
 
-    for _, row in df.iterrows():
-        email   = clean_val(row[email_col]) if email_col and email_col in row.index else ''
-        adm     = row[admissao_col] if admissao_col and admissao_col in row.index else None
-        vinculo = clean_val(row[vinculo_col]) if vinculo_col and vinculo_col in row.index else ''
+    _cols = list(df.columns)
+    for _r in df.itertuples(index=False, name=None):
+        row_dict = dict(zip(_cols, _r))
+        email   = clean_val(row_dict.get(email_col, ''))   if email_col   else ''
+        adm     = row_dict.get(admissao_col)               if admissao_col else None
+        vinculo = clean_val(row_dict.get(vinculo_col, '')) if vinculo_col  else ''
 
         if not email or not is_valid_email(email):
-            excluded_rows.append({**row.to_dict(), '_motivo': 'E-mail ausente', '_processo': process_name})
+            excluded_rows.append({**row_dict, '_motivo': 'E-mail ausente', '_processo': process_name})
             continue
 
         if adm is not None and is_future_date(adm):
-            excluded_rows.append({**row.to_dict(), '_motivo': 'Data de admissão futura', '_processo': process_name})
+            excluded_rows.append({**row_dict, '_motivo': 'Data de admissão futura', '_processo': process_name})
             continue
 
-        reason = check_fn(row, col_map, vinculo)
+        reason = check_fn(row_dict, col_map, vinculo)
         if reason:
-            excluded_rows.append({**row.to_dict(), '_motivo': reason, '_processo': process_name})
+            excluded_rows.append({**row_dict, '_motivo': reason, '_processo': process_name})
             continue
 
         # Regras de domínio de e-mail por grupo
-        if row.get('_grupo') == 'IHM' and '@' in email:
+        if row_dict.get('_grupo') == 'IHM' and '@' in email:
             if 'ihm' not in email.split('@')[-1]:
-                excluded_rows.append({**row.to_dict(), '_motivo': 'E-mail sem domínio IHM', '_processo': process_name})
+                excluded_rows.append({**row_dict, '_motivo': 'E-mail sem domínio IHM', '_processo': process_name})
                 continue
 
         TOPAZ_KW = ['topaz', 'tpz', 'grupotopaz', 'grupo-topaz', 'newm', 'top-systems', 'topsystems']
-        if row.get('_grupo') == 'Topaz' and '@' in email:
+        if row_dict.get('_grupo') == 'Topaz' and '@' in email:
             if not any(kw in email.split('@')[-1] for kw in TOPAZ_KW):
-                excluded_rows.append({**row.to_dict(), '_motivo': 'E-mail sem domínio Topaz', '_processo': process_name})
+                excluded_rows.append({**row_dict, '_motivo': 'E-mail sem domínio Topaz', '_processo': process_name})
                 continue
 
         STEFANINI_KW = ['stefanini']
-        if row.get('_grupo') == 'Stefanini' and '@' in email:
+        if row_dict.get('_grupo') == 'Stefanini' and '@' in email:
             if not any(kw in email.split('@')[-1] for kw in STEFANINI_KW):
-                excluded_rows.append({**row.to_dict(), '_motivo': 'E-mail sem domínio Stefanini', '_processo': process_name})
+                excluded_rows.append({**row_dict, '_motivo': 'E-mail sem domínio Stefanini', '_processo': process_name})
                 continue
 
-        eligible_rows.append(row.to_dict())
+        eligible_rows.append(row_dict)
     return eligible_rows, excluded_rows
 
 def check_tp(row, col_map, vinculo):
@@ -342,8 +365,8 @@ def check_wh(row, col_map, vinculo):
         if any(k in vinculo_norm for k in bad):
             return detect_vinculo_label(vinculo) or 'Vínculo inelegível para Wellhub'
     desconto_col = col_map.get('desconto_folha')
-    if desconto_col and desconto_col in row.index:
-        val = clean_val(row[desconto_col])
+    if desconto_col and desconto_col in row:
+        val = clean_val(row.get(desconto_col))
         if val:
             if norm(val) not in DESCONTO_POS:
                 return 'Sem desconto em folha habilitado'
@@ -422,34 +445,58 @@ def to_wellhub_row(row_dict, col_map):
         'Payroll Enabled': 'YES',
     }
 
+
+def write_fast_excel(rows, filepath, sheet_name, columns):
+    """Grava Excel com pandas (bulk) + openpyxl só no cabeçalho — 10x mais rápido."""
+    from openpyxl import load_workbook as _lw
+    _df = pd.DataFrame(rows if rows else [dict.fromkeys(columns, '')])
+    _df = _df.reindex(columns=columns, fill_value='')
+    for c in _df.columns:
+        _df[c] = _df[c].astype(str).replace({'nan':'','None':''})
+    _df.to_excel(filepath, sheet_name=sheet_name[:31], index=False, engine='openpyxl')
+    _wb = _lw(filepath)
+    _ws = _wb[sheet_name[:31]]
+    _hf = PatternFill('solid', fgColor='0F2A56')
+    _ff = Font(name='Calibri', bold=True, color='FFFFFF', size=11)
+    for ci, cn in enumerate(columns, 1):
+        c = _ws.cell(row=1, column=ci)
+        c.font = _ff; c.fill = _hf
+        c.alignment = Alignment(horizontal='left', vertical='center')
+        _ws.column_dimensions[c.column_letter].width = COL_WIDTHS.get(cn, 20)
+    _ws.freeze_panes = 'A2'
+    _ws.row_dimensions[1].height = 22
+    _wb.save(filepath)
+
+
 def write_styled_excel(rows, filepath, sheet_name, columns):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = sheet_name[:31]
-    header_fill   = PatternFill('solid', fgColor='0F2A56')
-    header_font   = Font(name='Calibri', bold=True, color='FFFFFF', size=11)
-    data_font     = Font(name='Calibri', size=10)
-    alt_fill      = PatternFill('solid', fgColor='F0F4F8')
-    bottom_border = Border(bottom=Side(style='thin', color='DBEAFE'))
+    """
+    Writer rápido para bases grandes.
+    Mantém cabeçalho, largura de colunas e dados.
+    Remove estilização pesada célula a célula para ganhar performance.
+    """
+    import xlsxwriter
 
-    for col_idx, col_name in enumerate(columns, 1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
-        cell.font      = header_font
-        cell.fill      = header_fill
-        cell.alignment = Alignment(horizontal='left', vertical='center')
-        ws.column_dimensions[cell.column_letter].width = COL_WIDTHS.get(col_name, 20)
+    wb = xlsxwriter.Workbook(filepath, {"constant_memory": True})
+    ws = wb.add_worksheet(sheet_name[:31])
 
-    for row_idx, row_data in enumerate(rows, 2):
-        for col_idx, col_name in enumerate(columns, 1):
-            cell        = ws.cell(row=row_idx, column=col_idx, value=str(row_data.get(col_name, '') or ''))
-            cell.font   = data_font
-            cell.border = bottom_border
-            if row_idx % 2 == 0:
-                cell.fill = alt_fill
+    header_fmt = wb.add_format({
+        "bold": True,
+        "font_color": "white",
+        "bg_color": "#0F2A56",
+        "align": "left",
+        "valign": "vcenter"
+    })
 
-    ws.row_dimensions[1].height = 22
-    ws.freeze_panes = 'A2'
-    wb.save(filepath)
+    for col_idx, col_name in enumerate(columns):
+        ws.write(0, col_idx, col_name, header_fmt)
+        ws.set_column(col_idx, col_idx, COL_WIDTHS.get(col_name, 20))
+
+    for row_idx, row_data in enumerate(rows, start=1):
+        for col_idx, col_name in enumerate(columns):
+            ws.write(row_idx, col_idx, str(row_data.get(col_name, "") or ""))
+
+    ws.freeze_panes(1, 0)
+    wb.close()
 
 # ─── Rotas Flask ──────────────────────────────────────────────────────────────
 
@@ -674,6 +721,39 @@ def api_process():
 
         with open(os.path.join(session_dir, 'wh_meta.json'), 'w', encoding='utf-8') as jf:
             json.dump(wh_file_meta, jf, ensure_ascii=False)
+        # Gera CSVs do Wellhub (um por empresa) e ZIP
+        import csv as _csv, zipfile as _zf
+        _WCOLS = ['Name (nome) obrigatório','Email obrigatório',
+                  'National ID (cpf) obrigatório','Employee ID (matrícula) obrigatório',
+                  'Department','Cost Center','Office Zip Code','Payroll ID',
+                  'Payroll Enabled (folha de pagamento habilitada?) obrigatório','Employee Segment']
+        _wh_csvs = []
+        for meta in wh_file_meta:
+            _safe     = re.sub(r'[^\w]', '_', meta['empresa']).upper().strip('_')
+            _csv_path = os.path.join(session_dir, f"wh_{re.sub(r'[^\w]','',meta['cnpj'])}.csv")
+            _csv_name = f"{_safe}_Wellhub.csv"
+            meta['csv_path'] = _csv_path
+            meta['csv_name'] = _csv_name
+            import pandas as _pd
+            _df = _pd.read_excel(meta['filepath'], dtype=str)
+            with open(_csv_path, 'w', newline='', encoding='utf-8-sig') as _f:
+                _w = _csv.writer(_f, delimiter=';')
+                _w.writerow(_WCOLS)
+                for _, _row in _df.iterrows():
+                    _w.writerow([
+                        _row.get('Name',''), _row.get('Email',''),
+                        _row.get('National ID',''), _row.get('Employee ID',''),
+                        '','','','', _row.get('Payroll Enabled','YES'), ''
+                    ])
+            _wh_csvs.append((_csv_path, _csv_name))
+        _wh_zip = os.path.join(session_dir, 'wellhub_csv_todos.zip')
+        with _zf.ZipFile(_wh_zip, 'w', _zf.ZIP_DEFLATED) as _z:
+            for _p, _n in _wh_csvs:
+                _z.write(_p, _n)
+
+        with open(os.path.join(session_dir, 'wh_meta.json'), 'w', encoding='utf-8') as jf:
+            json.dump(wh_file_meta, jf, ensure_ascii=False)
+
 
         def count_reasons(rows):
             counts = {}
@@ -846,31 +926,34 @@ MAR_SAUDE_COLS = [
     'Data de Admissão', 'Sexo', 'Data de Nascimento', 'Logradouro',
     'Endereço', 'Complemento', 'Bairro', 'Cidade', 'Complemento CEP',
     'E-mail Funcional', 'Número de CPF', 'Desc. Unidade Adm. (Cliente)',
+    'Desc. Tipo de Vínculo',
 ]
 
 MAR_SAUDE_COL_ALIASES = {
-    'empresa':       ['empresa'],
-    'nome_empresa':  ['nome empresa'],
-    'cnpj':         ['cnpj empresa', 'cnpj da empresa', 'cnpj'],
-    'celula':       ['célula', 'celula', 'centro de custo'],
-    'atividade':    ['desc. atividade (serviço)', 'desc. atividade', 'atividade', 'servico'],
-    'nome':         ['nome profissional', 'nome do profissional', 'nome'],
-    'nome_social':  ['nome social'],
-    'cargo':        ['nome cargo', 'nome função', 'nome funcao', 'cargo', 'função'],
-    'data_admissao':['admissão', 'admissao', 'data de admissão', 'data de admissao', 'dt admissão'],
-    'sexo':         ['sexo', 'gênero', 'genero'],
-    'dt_nascimento':['data de nascimento', 'nascimento', 'dt nascimento', 'data nascimento'],
-    'logradouro':   ['logradouro', 'tipo logradouro'],
-    'endereco':     ['endereço', 'endereco', 'rua', 'end'],
-    'complemento':  ['complemento'],
-    'bairro':       ['bairro'],
-    'cidade':       ['cidade', 'município', 'municipio'],
-    'cep':          ['complemento cep', 'cep', 'cod postal'],
-    'email':        ['e-mail funcional', 'email funcional', 'e-mail', 'email'],
-    'cpf':          ['número de cpf', 'cpf do profissional', 'cpf', 'nr cpf'],
-    'unidade_adm':  ['desc. unidade adm. (cliente)', 'desc. unidade adm', 'unidade adm'],
-    'tipo_vinculo': ['desc. tipo de vínculo', 'desc. tipo de vinculo',
-                     'desc. vínculo', 'desc. vinculo', 'vínculo', 'vinculo', 'regime'],
+    'empresa':       ['nome empresa', 'empresa'],
+    'nome_empresa':  ['nome empresa', 'empresa'],
+    'cnpj':          ['cnpj empresa', 'cnpj da empresa', 'cnpj'],
+    'celula':        ['c. custo', 'célula', 'celula', 'centro de custo'],
+    'atividade':     ['desc. atividade (serviço)', 'desc. atividade', 'atividade (serviço)', 'atividade'],
+    'nome':          ['nome', 'nome profissional', 'nome do profissional'],
+    'nome_social':   ['nome social'],
+    'cargo':         ['nome cargo', 'cargo', 'nome função', 'nome funcao', 'função'],
+    'data_admissao': ['data de admissão', 'data de admissao', 'admissão', 'admissao', 'dt admissão'],
+    'sexo':          ['sexo', 'gênero', 'genero'],
+    'dt_nascimento': ['data de nascimento', 'nascimento', 'dt nascimento', 'data nascimento'],
+    'logradouro':    ['logradouro', 'tipo logradouro'],
+    'endereco':      ['endereço', 'endereco', 'rua'],
+    'complemento':   ['complemento'],
+    'bairro':        ['bairro'],
+    'cidade':        ['cidade', 'município', 'municipio'],
+    'cep':           ['complemento cep', 'cep', 'cod postal'],
+    'email':         ['e-mail funcional', 'email funcional', 'e-mail', 'email'],
+    'cpf':           ['número de cpf', 'cpf', 'cpf do profissional', 'nr cpf'],
+    'unidade_adm':   ['desc. unidade adm. (cliente)', 'desc. unidade adm', 'unidade adm'],
+    'tipo_vinculo':  ['desc. tipo de vínculo', 'desc. tipo de vinculo',
+                      'desc. vínculo', 'desc. vinculo', 'vínculo', 'vinculo', 'regime'],
+    'nome_sindicato':['nome sindicato', 'sindicato', 'nome_sindicato',
+                      'desc. sindicato', 'desc sindicato'],
 }
 
 def _auto_map_ms(headers):
@@ -918,6 +1001,7 @@ def _to_ms_row(row_dict, col_map):
         'E-mail Funcional':             get('email'),
         'Número de CPF':                get('cpf'),
         'Desc. Unidade Adm. (Cliente)': get('unidade_adm'),
+        'Desc. Tipo de Vínculo':         get('tipo_vinculo'),
     }
 
 def _write_ms_csv(rows, filepath):
@@ -947,57 +1031,74 @@ def api_upload_mar_saude():
 
 @app.route('/api/get-columns-mar-saude', methods=['POST'])
 def api_get_columns_mar_saude():
-    data        = request.json
+    """Retorna somente cabeçalhos e auto-mapeamento. Não processa a planilha."""
+    data        = request.json or {}
     sid         = data.get('session_id')
     sheet_name  = data.get('sheet_name')
     upload_path = os.path.join(TEMP_DIR, sid, 'ms_source.xlsx')
     if not os.path.exists(upload_path):
         return jsonify({'error': 'Sessão expirada.'}), 400
     try:
-        df = pd.ExcelFile(upload_path).parse(sheet_name, dtype=str, na_filter=False)
+        df = pd.read_excel(upload_path, sheet_name=sheet_name, dtype=str,
+                           keep_default_na=False, nrows=0)
         df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
         cols = list(df.columns)
-        return jsonify({'headers': cols, 'auto_map': _auto_map_ms(cols), 'row_count': len(df)})
+        return jsonify({'headers': cols, 'auto_map': _auto_map_ms(cols), 'row_count': None})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/process-mar-saude', methods=['POST'])
 def api_process_mar_saude():
-    data        = request.json
+    """Processa Mar Saúde. Regra: remove PJ por Nome Sindicato ou Desc. Tipo de Vínculo."""
+    data        = request.json or {}
     sid         = data.get('session_id')
     sheet_name  = data.get('sheet_name')
-    col_map_usr = data.get('col_map', {})
+    col_map_usr = data.get('col_map', {}) or {}
     upload_path = os.path.join(TEMP_DIR, sid, 'ms_source.xlsx')
     if not os.path.exists(upload_path):
         return jsonify({'error': 'Sessão expirada.'}), 400
     try:
-        df = pd.ExcelFile(upload_path).parse(sheet_name, dtype=str, na_filter=False)
+        # Lê headers primeiro → seleciona só colunas necessárias
+        _hdr_ms = pd.read_excel(upload_path, sheet_name=sheet_name, dtype=str,
+                                keep_default_na=False, nrows=0)
+        _hdr_ms.columns = [str(c).strip().lstrip('\ufeff') for c in _hdr_ms.columns]
+        _auto_ms   = _auto_map_ms(list(_hdr_ms.columns))
+        _fmap_peek = {**_auto_ms, **{k: v for k, v in col_map_usr.items() if v}}
+        _needed_ms = list({v for v in _fmap_peek.values() if v and v in _hdr_ms.columns})
+        df = pd.read_excel(upload_path, sheet_name=sheet_name, dtype=str,
+                           keep_default_na=False,
+                           usecols=_needed_ms if _needed_ms else None)
         df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
-        mask = df.apply(lambda row: row.str.strip().ne('').any(), axis=1)
-        df   = df[mask].reset_index(drop=True)
+        mask = df.apply(lambda row: row.astype(str).str.strip().ne('').any(), axis=1)
+        df = df[mask].reset_index(drop=True)
 
         auto = _auto_map_ms(list(df.columns))
-        # col_map_usr sobrescreve o auto
         final_map = {**auto, **{k: v for k, v in col_map_usr.items() if v}}
 
-        # Converte datas
         for dk in ('data_admissao', 'dt_nascimento'):
             col = final_map.get(dk)
             if col and col in df.columns:
                 df[col] = df[col].apply(parse_mixed_dates)
 
-        vinculo_col = final_map.get('tipo_vinculo')
-        eligible, excluded = [], []
-        for _, row in df.iterrows():
-            vinculo = clean_val(row[vinculo_col]) if vinculo_col and vinculo_col in row.index else ''
-            vinculo_norm = norm(vinculo)
-            if vinculo_norm and any(k in vinculo_norm for k in PJ_KW):
-                excluded.append({'_motivo': 'Pessoa Jurídica (PJ)', **row.to_dict()})
-            else:
-                eligible.append(row.to_dict())
+        sindicato_col = final_map.get('nome_sindicato')
+        vinculo_col   = final_map.get('tipo_vinculo')
+        # ── Vetorizado ──
+        _sind = (df[sindicato_col].str.lower().str.strip().fillna('')
+                 if sindicato_col and sindicato_col in df.columns
+                 else pd.Series(['']*len(df)))
+        _vinc = (df[vinculo_col].str.lower().str.strip().fillna('')
+                 if vinculo_col and vinculo_col in df.columns
+                 else pd.Series(['']*len(df)))
+        pj_ms = (_sind.str.contains('somente pj', na=False) |
+                 (_vinc == 'outros') |
+                 _vinc.str.contains('|'.join(PJ_KW), na=False))
+        _excl = df[pj_ms].to_dict('records')
+        for r in _excl: r['_motivo'] = 'Pessoa Jurídica (PJ)'
+        excluded = _excl
+        eligible = df[~pj_ms].to_dict('records')
 
-        ms_rows  = [_to_ms_row(r, final_map) for r in eligible]
-        ex_rows  = [_to_ms_row(r, final_map) for r in excluded]
+        ms_rows = [_to_ms_row(r, final_map) for r in eligible]
+        ex_rows = [_to_ms_row(r, final_map) for r in excluded]
 
         session_dir = os.path.join(TEMP_DIR, sid)
         write_styled_excel(ms_rows, os.path.join(session_dir, 'ms_output.xlsx'),
@@ -1007,7 +1108,7 @@ def api_process_mar_saude():
                            'Excluídos', MAR_SAUDE_COLS)
 
         return jsonify({
-            'total':    len(df),
+            'total': len(df),
             'eligible': len(ms_rows),
             'excluded': len(ex_rows),
         })
@@ -1035,6 +1136,740 @@ def download_ms_audit(session_id):
     if os.path.exists(path):
         return send_file(path, as_attachment=True, download_name='MarSaude_Excluidos.xlsx')
     return 'Arquivo não encontrado.', 404
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPERT
+# ══════════════════════════════════════════════════════════════════════════════
+
+EXPERT_COLS = [
+    'Nome Unidade', 'Nome Setor', 'Nome Cargo', 'Matrícula',
+    'Nome Funcionário', 'Dt.Nascimento', 'Sexo', 'Situação',
+    'Dt.Admissão', 'CPF', 'CBO', 'Nome da Mae do Funcionário',
+    'Razão Social', 'CNPJ', 'Código Categoria (eSocial)',
+]
+
+EXPERT_INATIVOS_COLS = [
+    'Nome Funcionário', 'Situação Original', 'Motivo Inativação',
+    'Matrícula', 'CPF', 'Dt.Nascimento', 'Sexo', 'Dt.Admissão',
+    'Nome Unidade', 'Nome Setor', 'Nome Cargo', 'CBO',
+    'Nome da Mae do Funcionário', 'Razão Social', 'CNPJ',
+    'Código Categoria (eSocial)',
+]
+
+# Expert: coluna AC (Desc. Situação) — somente 'Ativo' é ativo
+EXPERT_SITUACAO_ATIVA    = 'ativo'
+SITUACAO_INATIVO_CODES   = {'90','91','92','93','95','96','99','9a','9A'}
+
+EXPERT_COL_ALIASES = {
+    'nome_unidade':  ['nome filial', 'nome unidade', 'unidade', 'nome da unidade', 'filial'],
+    'nome_setor':    ['desc. atividade (serviço)', 'desc. atividade', 'atividade (serviço)',
+                      'nome setor', 'setor', 'departamento'],
+    'nome_cargo':    ['nome cargo', 'cargo', 'função', 'nome função', 'funcao'],
+    'matricula':     ['matrícula', 'matricula', 'chapa', 'matrícula rh', 'matricula rh',
+                      'matricula esocial'],
+    'nome':          ['nome', 'nome funcionário', 'nome funcionario', 'nome profissional'],
+    'dt_nascimento': ['data de nascimento', 'dt.nascimento', 'dt nascimento', 'data nascimento'],
+    'sexo':          ['sexo', 'gênero', 'genero'],
+    'situacao':      ['desc. situação', 'desc. situacao', 'desc situação', 'desc situacao',
+                      'descrição situação', 'descricao situacao', 'situação', 'situacao',
+                      'desc. situacao funcionário', 'desc. situacao funcionario',
+                      'status', 'sit.'],
+    'dt_admissao':   ['data de admissão', 'data de admissao', 'dt.admissão', 'dt.admissao',
+                      'dt admissão', 'dt admissao', 'admissão'],
+    'cpf':           ['número de cpf', 'numero de cpf', 'cpf', 'nr cpf', 'pis/pasep'],
+    'cbo':           ['id. cbo', 'cbo', 'cbo 2002', 'cod cbo', 'código cbo', 'cód. cbo'],
+    'nome_mae':      ['nome mãe', 'nome mae', 'nome da mae do funcionário', 'nome da mae'],
+    'razao_social':  ['nome empresa', 'razão social', 'razao social', 'razão social unid.'],
+    'cnpj':          ['cnpj empresa', 'cnpj', 'cnpj unidade', 'cnpj da empresa'],
+    'cod_categoria': ['desc. tipo de vínculo', 'desc. tipo de vinculo', 'cód. categoria', 'cod. categoria', 'código categoria (esocial)',
+                      'codigo categoria esocial', 'categoria esocial'],
+    'tipo_vinculo':   ['desc. tipo de vínculo', 'desc. tipo de vinculo',
+                       'desc. vínculo', 'desc. vinculo', 'vínculo', 'vinculo',
+                       'tipo de vínculo', 'tipo de vinculo', 'regime', 'modalidade'],
+    'nome_sindicato': ['nome sindicato', 'sindicato', 'nome_sindicato',
+                       'desc. sindicato', 'desc sindicato'],
+}
+
+INATIVO_KW_EXPERT = ['inativo', 'desligado', 'demitido', 'rescindido', 'inactive']
+
+
+def _is_pj_expert(row_d, col_map):
+    """
+    Regra PJ do Expert.
+
+    Mantém o critério por Código Categoria (eSocial) e acrescenta a regra do
+    Mar Saúde:
+    - Nome Sindicato contendo "Somente PJ";
+    - Desc. Tipo de Vínculo igual a "OUTROS";
+    - Desc. Tipo de Vínculo contendo termos de PJ.
+    """
+    cod_cat_col = col_map.get('cod_categoria', '')
+    if cod_cat_col:
+        cod_cat = norm(clean_val(row_d.get(cod_cat_col, '')))
+        if any(k in cod_cat for k in PJ_KW):
+            return True
+
+    sindicato_col = col_map.get('nome_sindicato', '')
+    if sindicato_col:
+        sindicato = norm(clean_val(row_d.get(sindicato_col, '')))
+        if 'somente pj' in sindicato:
+            return True
+
+    vinculo_col = col_map.get('tipo_vinculo', '')
+    if vinculo_col:
+        vinculo = norm(clean_val(row_d.get(vinculo_col, '')))
+        if vinculo == 'outros' or any(k in vinculo for k in PJ_KW):
+            return True
+
+    return False
+
+COL_WIDTHS.update({
+    'Nome Unidade': 35, 'Nome Setor': 30, 'Nome Cargo': 32,
+    'Nome Funcionário': 42, 'Dt.Nascimento': 16, 'Sexo': 10,
+    'Situação': 14, 'Dt.Admissão': 16, 'CBO': 12,
+    'Nome da Mae do Funcionário': 42, 'Razão Social': 40,
+    'Código Categoria (eSocial)': 30,
+    'Situação Original': 26, 'Motivo Inativação': 34,
+})
+
+
+def _auto_map_expert(headers):
+    """Mapeia colunas: tenta match exato primeiro, depois parcial."""
+    mapping = {}
+    hl = [(h, norm(h), norm_ascii(h)) for h in headers]
+    for key, aliases in EXPERT_COL_ALIASES.items():
+        # Passagem 1: match exato
+        for alias in aliases:
+            alias_norm = norm(alias)
+            alias_ascii = norm_ascii(alias)
+            for h, l, la in hl:
+                if l == alias_norm or la == alias_ascii:
+                    mapping[key] = h
+                    break
+            if key in mapping:
+                break
+        if key in mapping:
+            continue
+        # Passagem 2: match parcial (alias contido no header)
+        for alias in aliases:
+            if len(alias) < 5:
+                continue
+            alias_norm = norm(alias)
+            alias_ascii = norm_ascii(alias)
+            for h, l, la in hl:
+                if (alias_norm in l or alias_ascii in la) and key not in mapping:
+                    mapping[key] = h
+                    break
+            if key in mapping:
+                break
+    return mapping
+
+
+def _prefer_expert_desc_situacao(headers):
+    """No Expert, a regra de inativos deve usar a coluna descritiva."""
+    preferred = {
+        'desc. situacao',
+        'desc situacao',
+        'descricao situacao',
+        'desc. situacao funcionario',
+        'desc situacao funcionario',
+    }
+    for h in headers:
+        if norm_ascii(h) in preferred:
+            return h
+    return None
+
+
+def _to_expert_row(row, col_map):
+    get = lambda k: clean_val(row.get(col_map.get(k, ''), ''))
+    return {
+        'Nome Unidade':               get('nome_unidade'),
+        'Nome Setor':                 get('nome_setor'),
+        'Nome Cargo':                 get('nome_cargo'),
+        'Matrícula':                  get('matricula'),
+        'Nome Funcionário':           get('nome'),
+        'Dt.Nascimento':              format_date_val(row.get(col_map.get('dt_nascimento', ''), '')),
+        'Sexo':                       get('sexo'),
+        'Situação':                   get('situacao'),
+        'Dt.Admissão':                format_date_val(row.get(col_map.get('dt_admissao', ''), '')),
+        'CPF':                        format_cpf(get('cpf')),
+        'CBO':                        get('cbo'),
+        'Nome da Mae do Funcionário': get('nome_mae'),
+        'Razão Social':               get('razao_social'),
+        'CNPJ':                       format_cnpj(get('cnpj')),
+        'Código Categoria (eSocial)': get('cod_categoria'),
+    }
+
+
+def _to_expert_inativo_row(row, col_map):
+    base = _to_expert_row(row, col_map)
+    situacao = base.get('Situação') or clean_val(row.get(col_map.get('situacao', ''), ''))
+    return {
+        'Nome Funcionário':           base.get('Nome Funcionário', ''),
+        'Situação Original':          situacao,
+        'Motivo Inativação':          'Desc. Situação diferente de Ativo',
+        'Matrícula':                  base.get('Matrícula', ''),
+        'CPF':                        base.get('CPF', ''),
+        'Dt.Nascimento':              base.get('Dt.Nascimento', ''),
+        'Sexo':                       base.get('Sexo', ''),
+        'Dt.Admissão':                base.get('Dt.Admissão', ''),
+        'Nome Unidade':               base.get('Nome Unidade', ''),
+        'Nome Setor':                 base.get('Nome Setor', ''),
+        'Nome Cargo':                 base.get('Nome Cargo', ''),
+        'CBO':                        base.get('CBO', ''),
+        'Nome da Mae do Funcionário': base.get('Nome da Mae do Funcionário', ''),
+        'Razão Social':               base.get('Razão Social', ''),
+        'CNPJ':                       base.get('CNPJ', ''),
+        'Código Categoria (eSocial)': base.get('Código Categoria (eSocial)', ''),
+    }
+
+
+def _write_expert_csv(rows, filepath, columns=None):
+    import csv
+    columns = columns or EXPERT_COLS
+    with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.DictWriter(f, fieldnames=columns, delimiter=';', extrasaction='ignore')
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _generate_expert_ppt(ativos, inativos, excluidos, filepath):
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+    except ImportError:
+        return False
+    NAVY  = RGBColor(0x0F, 0x2A, 0x56)
+    TEAL  = RGBColor(0x00, 0xC2, 0xA0)
+    WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+    GRAY  = RGBColor(0x64, 0x74, 0x8B)
+    RED   = RGBColor(0xEF, 0x44, 0x44)
+    GREEN = RGBColor(0x10, 0xB9, 0x81)
+    prs = Presentation()
+    prs.slide_width  = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+    blank = prs.slide_layouts[6]
+    def rect(sl, l, t, w, h, fill=None):
+        s = sl.shapes.add_shape(1, Inches(l), Inches(t), Inches(w), Inches(h))
+        s.line.fill.background()
+        if fill:
+            s.fill.solid()
+            s.fill.fore_color.rgb = fill
+        else:
+            s.fill.background()
+    def txt(sl, text, l, t, w, h, size=12, bold=False, color=None, align=PP_ALIGN.LEFT):
+        tb = sl.shapes.add_textbox(Inches(l), Inches(t), Inches(w), Inches(h))
+        tf = tb.text_frame
+        p  = tf.paragraphs[0]
+        p.alignment = align
+        r  = p.add_run()
+        r.text = str(text)
+        r.font.size = Pt(size)
+        r.font.bold = bold
+        r.font.color.rgb = color or NAVY
+    def metric(sl, l, t, label, value, color):
+        rect(sl, l, t, 2.8, 1.3, fill=color)
+        txt(sl, label, l+0.15, t+0.12, 2.5, 0.4, 9, False, WHITE)
+        txt(sl, str(value), l+0.15, t+0.5, 2.5, 0.6, 30, True, WHITE)
+    total   = len(ativos) + len(inativos) + len(excluidos)
+    excl_e  = sum(1 for r in excluidos if r.get('_motivo') == 'Estagiário')
+    excl_pj = sum(1 for r in excluidos if r.get('_motivo') == 'Pessoa Jurídica (PJ)')
+    today   = __import__('datetime').date.today().strftime('%d/%m/%Y')
+    sl = prs.slides.add_slide(blank)
+    rect(sl, 0, 0, 13.33, 7.5, fill=NAVY)
+    rect(sl, 0, 5.8, 13.33, 1.7, fill=TEAL)
+    txt(sl, 'Expert', 0.6, 1.2, 12, 1.0, 52, True, WHITE)
+    txt(sl, 'Relatório de Bases de Profissionais', 0.6, 2.3, 12, 0.6, 18, False, WHITE)
+    txt(sl, f'Processado em {today}  ·  Stefanini Group', 0.6, 3.0, 12, 0.5, 12, False, RGBColor(0xAA,0xBB,0xCC))
+    sl = prs.slides.add_slide(blank)
+    rect(sl, 0, 0, 13.33, 1.0, fill=NAVY)
+    txt(sl, 'Resumo Executivo', 0.4, 0.15, 10, 0.7, 20, True, WHITE)
+    metric(sl, 0.4, 1.2, 'Total Analisado', total, NAVY)
+    metric(sl, 3.4, 1.2, 'Ativos', len(ativos), GREEN)
+    metric(sl, 6.4, 1.2, 'Inativos', len(inativos), GRAY)
+    metric(sl, 9.4, 1.2, 'Removidos', len(excluidos), RED)
+    prs.save(filepath)
+    return True
+
+
+def _generate_expert_ppt(ativos, inativos, excluidos, filepath):
+    """Gera PPT executivo do cliente Expert com leitura gerencial da base."""
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+    except ImportError:
+        return False
+
+    NAVY  = RGBColor(0x0F, 0x2A, 0x56)
+    TEAL  = RGBColor(0x00, 0xC2, 0xA0)
+    WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+    GRAY  = RGBColor(0x64, 0x74, 0x8B)
+    LGRAY = RGBColor(0xF1, 0xF5, 0xF9)
+    TEXT  = RGBColor(0x1E, 0x29, 0x3B)
+    RED   = RGBColor(0xEF, 0x44, 0x44)
+    GREEN = RGBColor(0x10, 0xB9, 0x81)
+    AMBER = RGBColor(0xF5, 0x9E, 0x0B)
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+    blank = prs.slide_layouts[6]
+
+    def clean_text(v):
+        return str(v or '').strip()
+
+    def pct(n, d):
+        return '0,0%' if not d else f'{(n / d) * 100:.1f}%'.replace('.', ',')
+
+    def fmt(n):
+        return f'{int(n):,}'.replace(',', '.')
+
+    def count_by(rows, *keys):
+        counts = {}
+        for row in rows:
+            value = ''
+            for key in keys:
+                value = clean_text(row.get(key, ''))
+                if value:
+                    break
+            value = value or 'Nao informado'
+            counts[value] = counts.get(value, 0) + 1
+        return dict(sorted(counts.items(), key=lambda item: item[1], reverse=True))
+
+    def rect(sl, l, t, w, h, fill=None, line=None):
+        shp = sl.shapes.add_shape(1, Inches(l), Inches(t), Inches(w), Inches(h))
+        if line:
+            shp.line.color.rgb = line
+            shp.line.width = Pt(1)
+        else:
+            shp.line.fill.background()
+        if fill:
+            shp.fill.solid()
+            shp.fill.fore_color.rgb = fill
+        else:
+            shp.fill.background()
+        return shp
+
+    def txt(sl, text, l, t, w, h, size=16, bold=False, color=None, align=PP_ALIGN.LEFT):
+        box = sl.shapes.add_textbox(Inches(l), Inches(t), Inches(w), Inches(h))
+        tf = box.text_frame
+        tf.margin_left = Inches(0.02)
+        tf.margin_right = Inches(0.02)
+        tf.margin_top = Inches(0.02)
+        tf.margin_bottom = Inches(0.02)
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        p.alignment = align
+        run = p.add_run()
+        run.text = str(text)
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        run.font.color.rgb = color or TEXT
+        return box
+
+    def title(sl, text):
+        rect(sl, 0, 0, 13.33, 0.9, fill=NAVY)
+        txt(sl, text, 0.45, 0.18, 12.2, 0.52, 28, True, WHITE)
+
+    def footer(sl, page):
+        txt(sl, 'BenefProcess | Expert | Stefanini Group', 0.45, 7.1, 7.2, 0.22, 8, False, GRAY)
+        txt(sl, str(page), 12.35, 7.1, 0.45, 0.22, 8, False, GRAY, PP_ALIGN.RIGHT)
+
+    def metric(sl, l, t, label, value, color, sub=''):
+        rect(sl, l, t, 2.75, 1.25, fill=color)
+        txt(sl, label, l + 0.15, t + 0.14, 2.45, 0.25, 11, True, WHITE)
+        txt(sl, str(value), l + 0.15, t + 0.45, 2.45, 0.45, 27, True, WHITE)
+        if sub:
+            txt(sl, sub, l + 0.15, t + 0.95, 2.45, 0.2, 8, False, WHITE)
+
+    def bullet(sl, text, l, t, w, size=15, color=TEXT):
+        txt(sl, f'- {text}', l, t, w, 0.35, size, False, color)
+
+    def table(sl, x, y, widths, rows, header_fill=NAVY, row_h=0.36, font=10):
+        for ri, row in enumerate(rows):
+            xcur = x
+            fill = header_fill if ri == 0 else (LGRAY if ri % 2 else WHITE)
+            color = WHITE if ri == 0 else TEXT
+            bold = ri == 0
+            for ci, cell in enumerate(row):
+                rect(sl, xcur, y + ri * row_h, widths[ci], row_h, fill=fill, line=RGBColor(0xE2, 0xE8, 0xF0))
+                align = PP_ALIGN.RIGHT if ci > 0 else PP_ALIGN.LEFT
+                txt(sl, str(cell), xcur + 0.06, y + ri * row_h + 0.07, widths[ci] - 0.12, row_h - 0.08, font, bold, color, align)
+                xcur += widths[ci]
+
+    def bar(sl, label, value, total, x, y, w, color):
+        txt(sl, label, x, y, 3.2, 0.22, 12, True, TEXT)
+        rect(sl, x + 3.25, y + 0.02, w, 0.22, fill=RGBColor(0xE2, 0xE8, 0xF0))
+        width = 0 if total == 0 else max(0.05, w * value / total)
+        rect(sl, x + 3.25, y + 0.02, width, 0.22, fill=color)
+        txt(sl, f'{fmt(value)} ({pct(value, total)})', x + 3.25 + w + 0.15, y - 0.02, 1.7, 0.26, 11, True, TEXT)
+
+    total = len(ativos) + len(inativos) + len(excluidos)
+    impactados = len(inativos) + len(excluidos)
+    inativos_counts = count_by(inativos, 'Situação Original', 'Situacao Original', 'Situação', 'Situacao')
+    excluidos_counts = count_by(excluidos, '_motivo', 'Motivo')
+    empresa_counts = count_by(ativos + inativos, 'Razão Social', 'Razao Social', 'Nome Empresa')
+    cargo_missing = sum(1 for r in ativos if not clean_text(r.get('Nome Cargo', '')))
+    cbo_missing = sum(1 for r in ativos if not clean_text(r.get('CBO', '')))
+    cpf_missing = sum(1 for r in ativos if not clean_text(r.get('CPF', '')))
+    today = __import__('datetime').date.today().strftime('%d/%m/%Y')
+
+    sl = prs.slides.add_slide(blank)
+    rect(sl, 0, 0, 13.33, 7.5, fill=NAVY)
+    rect(sl, 0, 5.85, 13.33, 1.65, fill=TEAL)
+    txt(sl, 'Expert', 0.65, 1.15, 12, 0.85, 50, True, WHITE)
+    txt(sl, 'Analise executiva da base de profissionais', 0.7, 2.1, 10.8, 0.55, 22, False, WHITE)
+    txt(sl, f'Processamento local realizado em {today}', 0.7, 2.75, 7.5, 0.3, 14, False, RGBColor(0xCA, 0xDC, 0xFC))
+    txt(sl, 'Objetivo: separar registros aptos para envio, controlar inativos e evidenciar exclusoes por regra de negocio.', 0.7, 6.25, 11.5, 0.55, 18, True, NAVY)
+
+    sl = prs.slides.add_slide(blank)
+    title(sl, 'A base foi saneada e separada para reduzir risco no envio')
+    metric(sl, 0.55, 1.35, 'Total analisado', fmt(total), NAVY, '100% da base de entrada')
+    metric(sl, 3.55, 1.35, 'Ativos para envio', fmt(len(ativos)), GREEN, pct(len(ativos), total))
+    metric(sl, 6.55, 1.35, 'Inativos em controle', fmt(len(inativos)), GRAY, pct(len(inativos), total))
+    metric(sl, 9.55, 1.35, 'Removidos por regra', fmt(len(excluidos)), RED, pct(len(excluidos), total))
+    txt(sl, 'Leitura executiva', 0.65, 3.15, 4, 0.35, 20, True, NAVY)
+    bullet(sl, f'{fmt(impactados)} registros nao seguem como ativos elegiveis e precisam ficar fora do envio principal.', 0.8, 3.75, 11.6, 16)
+    bullet(sl, 'A separacao evita inclusao indevida de profissionais afastados, em licenca, aposentadoria por invalidez ou fora das regras contratuais.', 0.8, 4.25, 11.6, 16)
+    bullet(sl, 'Os arquivos Excel e CSV preservam o detalhe operacional; esta apresentacao resume os pontos de controle para decisao.', 0.8, 4.75, 11.6, 16)
+    footer(sl, 2)
+
+    sl = prs.slides.add_slide(blank)
+    title(sl, 'A regra central usa a descricao de situacao como fonte de verdade')
+    txt(sl, 'Criterio aplicado', 0.55, 1.25, 4.3, 0.35, 20, True, NAVY)
+    bullet(sl, 'Somente registros com Desc. Situacao igual a Ativo permanecem na base de ativos.', 0.75, 1.8, 5.7)
+    bullet(sl, 'Qualquer outra descricao de situacao e direcionada ao arquivo de inativos.', 0.75, 2.25, 5.7)
+    bullet(sl, 'Registros ativos classificados como PJ, estagiario ou aprendiz sao removidos por regra de elegibilidade.', 0.75, 2.7, 5.7)
+    txt(sl, 'Entregaveis gerados', 7.0, 1.25, 4.3, 0.35, 20, True, NAVY)
+    bullet(sl, 'Expert_Ativos.xlsx e Expert_Ativos.csv para envio operacional.', 7.2, 1.8, 5.4)
+    bullet(sl, 'Expert_Inativos.xlsx e Expert_Inativos.csv com a situacao original preservada.', 7.2, 2.25, 5.4)
+    bullet(sl, 'Apresentacao executiva com visao consolidada e pontos de atencao.', 7.2, 2.7, 5.4)
+    rect(sl, 0.8, 4.1, 11.7, 1.5, fill=LGRAY)
+    txt(sl, 'Ponto de controle', 1.05, 4.35, 3, 0.28, 17, True, NAVY)
+    txt(sl, 'O processo forca o uso da coluna Desc. Situacao quando ela existe na base, evitando leitura indevida da coluna codificada Situacao.', 1.05, 4.8, 10.8, 0.45, 17, False, TEXT)
+    footer(sl, 3)
+
+    sl = prs.slides.add_slide(blank)
+    title(sl, 'A maior parte da base segue apta, mas ha controles fora do envio')
+    bar(sl, 'Ativos para envio', len(ativos), total, 0.75, 1.55, 6.1, GREEN)
+    bar(sl, 'Inativos em controle', len(inativos), total, 0.75, 2.25, 6.1, GRAY)
+    bar(sl, 'Removidos por regra', len(excluidos), total, 0.75, 2.95, 6.1, RED)
+    txt(sl, 'O que isso significa', 0.9, 4.15, 3.6, 0.28, 19, True, NAVY)
+    bullet(sl, 'A base final de ativos representa o universo elegivel apos saneamento.', 1.05, 4.65, 5.6)
+    bullet(sl, 'Inativos nao sao erro de cadastro: sao registros que requerem controle separado.', 1.05, 5.1, 5.6)
+    bullet(sl, 'Removidos representam regras objetivas que impedem envio ao cliente.', 1.05, 5.55, 5.6)
+    txt(sl, 'Distribuicao por empresa', 7.3, 1.25, 4.3, 0.35, 20, True, NAVY)
+    emp_rows = [['Empresa', 'Qtd.']] + [[k[:32], fmt(v)] for k, v in list(empresa_counts.items())[:7]]
+    table(sl, 7.3, 1.75, [3.55, 1.2], emp_rows, font=9)
+    footer(sl, 4)
+
+    sl = prs.slides.add_slide(blank)
+    title(sl, 'Os inativos se concentram em afastamentos previdenciarios e licencas')
+    rows = [['Situacao original', 'Qtd.', '% base', '% inativos']]
+    for k, v in list(inativos_counts.items())[:9]:
+        rows.append([k, fmt(v), pct(v, total), pct(v, len(inativos))])
+    table(sl, 0.75, 1.25, [4.5, 1.0, 1.35, 1.55], rows, font=9)
+    txt(sl, 'Interpretacao', 9.1, 1.3, 3, 0.28, 20, True, NAVY)
+    bullet(sl, 'Afastamentos e licencas devem ficar rastreaveis para atualizacao futura.', 9.15, 1.85, 3.6, 14)
+    bullet(sl, 'A preservacao da situacao original reduz retrabalho na validacao com RH.', 9.15, 2.45, 3.6, 14)
+    bullet(sl, 'O detalhe nominativo permanece no arquivo Expert_Inativos.', 9.15, 3.05, 3.6, 14)
+    footer(sl, 5)
+
+    sl = prs.slides.add_slide(blank)
+    title(sl, 'As exclusoes removem perfis fora do escopo do envio')
+    rows = [['Motivo da remocao', 'Qtd.', '% base', 'Tratamento']]
+    treatment = {
+        'Pessoa Jurídica (PJ)': 'Nao elegivel',
+        'Pessoa Juridica (PJ)': 'Nao elegivel',
+        'Estagiário': 'Fora da regra',
+        'Estagiario': 'Fora da regra',
+        'Menor Aprendiz': 'Fora da regra',
+    }
+    for k, v in list(excluidos_counts.items())[:8]:
+        rows.append([k, fmt(v), pct(v, total), treatment.get(k, 'Revisar regra')])
+    table(sl, 0.8, 1.35, [3.4, 1.0, 1.35, 2.0], rows, font=10)
+    txt(sl, 'Impacto para a diretoria', 8.5, 1.35, 3.7, 0.28, 20, True, NAVY)
+    bullet(sl, 'A remocao protege o envio contra grupos nao previstos no contrato ou na politica de beneficios.', 8.6, 1.9, 3.7, 14)
+    bullet(sl, 'A regra e objetiva e auditavel por motivo, sem exclusao manual pontual.', 8.6, 2.65, 3.7, 14)
+    bullet(sl, 'Mudancas de politica podem ser refletidas no processamento futuro sem alterar os arquivos historicos.', 8.6, 3.35, 3.7, 14)
+    footer(sl, 6)
+
+    sl = prs.slides.add_slide(blank)
+    title(sl, 'Controles de qualidade deixam a base pronta para uso operacional')
+    metric(sl, 0.7, 1.35, 'Ativos sem CPF', fmt(cpf_missing), GREEN if cpf_missing == 0 else AMBER, 'controle cadastral')
+    metric(sl, 3.7, 1.35, 'Ativos sem cargo', fmt(cargo_missing), GREEN if cargo_missing == 0 else AMBER, 'qualidade de perfil')
+    metric(sl, 6.7, 1.35, 'Ativos sem CBO', fmt(cbo_missing), GREEN if cbo_missing == 0 else AMBER, 'classificacao ocupacional')
+    txt(sl, 'Controles aplicados no processamento', 0.8, 3.25, 5.2, 0.3, 20, True, NAVY)
+    bullet(sl, 'Leitura estruturada da base e selecao das colunas necessarias.', 1.0, 3.8, 5.8)
+    bullet(sl, 'Separacao entre ativos, inativos e removidos antes da geracao dos arquivos.', 1.0, 4.25, 5.8)
+    bullet(sl, 'Geracao de Excel e CSV para conferencia e envio.', 1.0, 4.7, 5.8)
+    txt(sl, 'Governanca recomendada', 7.2, 3.25, 4.2, 0.3, 20, True, NAVY)
+    bullet(sl, 'Guardar os arquivos gerados como evidencia da competencia processada.', 7.4, 3.8, 5.0)
+    bullet(sl, 'Validar mudancas de regra com Gente & Cultura antes de novo ciclo.', 7.4, 4.25, 5.0)
+    bullet(sl, 'Tratar inativos como controle separado, nao como removidos.', 7.4, 4.7, 5.0)
+    footer(sl, 7)
+
+    sl = prs.slides.add_slide(blank)
+    title(sl, 'Decisao recomendada e proximos passos')
+    txt(sl, 'Recomendacao', 0.75, 1.25, 4, 0.3, 22, True, NAVY)
+    txt(sl, 'Aprovar o envio da base de ativos e manter inativos e removidos segregados como evidencia de controle.', 0.8, 1.75, 11.4, 0.55, 22, True, TEXT)
+    txt(sl, 'Proximos passos', 0.75, 3.0, 4, 0.3, 22, True, NAVY)
+    bullet(sl, 'Enviar Expert_Ativos para o fluxo operacional aprovado.', 1.0, 3.55, 10.8, 17)
+    bullet(sl, 'Compartilhar Expert_Inativos com RH para acompanhamento de retorno, licenca, afastamento ou alteracao cadastral.', 1.0, 4.05, 10.8, 17)
+    bullet(sl, 'Revisar a lista de removidos apenas se houver mudanca formal na regra de elegibilidade.', 1.0, 4.55, 10.8, 17)
+    bullet(sl, 'Arquivar a apresentacao e os arquivos de saida como trilha de auditoria do ciclo.', 1.0, 5.05, 10.8, 17)
+    rect(sl, 0.85, 6.0, 11.65, 0.65, fill=LGRAY)
+    txt(sl, 'Mensagem-chave: o processo entrega uma base utilizavel, auditavel e separada por finalidade, reduzindo risco de envio indevido.', 1.05, 6.18, 11.1, 0.3, 16, True, NAVY)
+    footer(sl, 8)
+
+    prs.save(filepath)
+    return True
+
+
+@app.route('/api/upload-expert', methods=['POST'])
+def api_upload_expert():
+    if 'file' not in request.files:
+        return jsonify({'error': 'Nenhum arquivo enviado.'}), 400
+    f = request.files['file']
+    if not f.filename.lower().endswith(('.xlsx', '.xls', '.csv')):
+        return jsonify({'error': 'Formato inválido. Envie .xlsx, .xls ou .csv.'}), 400
+    sid = str(uuid.uuid4())
+    session_dir = os.path.join(TEMP_DIR, sid)
+    os.makedirs(session_dir, exist_ok=True)
+    ext = os.path.splitext(f.filename)[1].lower()
+    upload_path = os.path.join(session_dir, f'expert_source{ext}')
+    f.save(upload_path)
+    try:
+        if ext == '.csv':
+            sheet_names = ['Planilha1']
+        else:
+            sheet_names = pd.ExcelFile(upload_path).sheet_names
+        return jsonify({'session_id': sid, 'sheet_names': sheet_names,
+                        'filename': f.filename, 'ext': ext})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/get-columns-expert', methods=['POST'])
+def api_get_columns_expert():
+    data        = request.json
+    sid         = data.get('session_id')
+    sheet_name  = data.get('sheet_name', 'Planilha1')
+    session_dir = os.path.join(TEMP_DIR, sid)
+    if not os.path.isdir(session_dir):
+        return jsonify({'error': 'Sessão expirada.'}), 400
+    src = next((os.path.join(session_dir, fn)
+                for fn in os.listdir(session_dir)
+                if fn.startswith('expert_source')), None)
+    if not src:
+        return jsonify({'error': 'Arquivo não encontrado.'}), 400
+    try:
+        ext = os.path.splitext(src)[1].lower()
+        if ext == '.csv':
+            df = None
+            for enc in ['utf-8-sig', 'latin-1', 'utf-8']:
+                try:
+                    df = pd.read_csv(src, dtype=str, sep=None, engine='python',
+                                     encoding=enc, nrows=0, na_filter=False)
+                    break
+                except Exception:
+                    continue
+        else:
+            df = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
+                               keep_default_na=False, nrows=0)
+        if df is None:
+            return jsonify({'error': 'Não foi possível ler o arquivo.'}), 500
+        cols = [str(c).strip() for c in df.columns]
+        return jsonify({'headers': cols, 'auto_map': _auto_map_expert(cols)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/process-expert', methods=['POST'])
+def api_process_expert():
+    data        = request.json
+    sid         = data.get('session_id')
+    sheet_name  = data.get('sheet_name', 'Planilha1')
+    col_map_usr = data.get('col_map', {})
+    session_dir = os.path.join(TEMP_DIR, sid)
+    if not os.path.isdir(session_dir):
+        return jsonify({'error': 'Sessão expirada.'}), 400
+    src = next((os.path.join(session_dir, fn)
+                for fn in os.listdir(session_dir)
+                if fn.startswith('expert_source')), None)
+    if not src:
+        return jsonify({'error': 'Arquivo não encontrado.'}), 400
+    try:
+        ext = os.path.splitext(src)[1].lower()
+
+        # 1. Lê só os cabeçalhos para montar o mapeamento
+        if ext == '.csv':
+            _hdr = None
+            _enc = 'latin-1'
+            for enc in ['utf-8-sig', 'latin-1', 'utf-8']:
+                try:
+                    _hdr = pd.read_csv(src, dtype=str, sep=None, engine='python',
+                                       encoding=enc, nrows=0, na_filter=False)
+                    _enc = enc
+                    break
+                except Exception:
+                    continue
+            if _hdr is None:
+                return jsonify({'error': 'Erro ao ler CSV.'}), 500
+        else:
+            _hdr = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
+                                 keep_default_na=False, nrows=0)
+
+        _hdr.columns = [str(c).strip().lstrip('﻿') for c in _hdr.columns]
+        auto      = _auto_map_expert(list(_hdr.columns))
+        final_map = {**auto, **{k: v for k, v in col_map_usr.items() if v}}
+        desc_situacao_col = _prefer_expert_desc_situacao(list(_hdr.columns))
+        if desc_situacao_col:
+            final_map['situacao'] = desc_situacao_col
+
+        # 2. Lê apenas as colunas necessárias (3x mais rápido)
+        _needed = list({v for v in final_map.values() if v and v in _hdr.columns})
+
+        if ext == '.csv':
+            df = None
+            for enc in ['utf-8-sig', 'latin-1', 'utf-8']:
+                try:
+                    df = pd.read_csv(src, dtype=str, sep=None, engine='python',
+                                     encoding=enc, na_filter=False,
+                                     usecols=_needed if _needed else None)
+                    break
+                except Exception:
+                    continue
+            if df is None:
+                return jsonify({'error': 'Erro ao ler CSV.'}), 500
+        else:
+            df = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
+                               keep_default_na=False,
+                               usecols=_needed if _needed else None)
+        df.columns = [str(c).strip().lstrip('﻿') for c in df.columns]
+        df = df[df.apply(lambda r: r.astype(str).str.strip().ne('').any(), axis=1)].reset_index(drop=True)
+        for dk in ('dt_admissao', 'dt_nascimento'):
+            col = final_map.get(dk)
+            if col and col in df.columns:
+                df[col] = df[col].apply(parse_mixed_dates)
+        situacao_col = final_map.get('situacao', '')
+        cod_cat_col  = final_map.get('cod_categoria', '')
+        ativos_rows, inativos_rows, excluidos_rows = [], [], []
+        # ── Processamento vetorizado (100x mais rápido para 95k+ linhas) ──
+        sit_col  = situacao_col if situacao_col and situacao_col in df.columns else None
+        vinc_col = cod_cat_col  if cod_cat_col  and cod_cat_col  in df.columns else None
+
+        if not sit_col:
+            return jsonify({
+                'error': 'Mapeie a coluna "Desc. Situação" para separar ativos e inativos do Expert.'
+            }), 400
+
+        sit  = df[sit_col].map(norm_ascii).fillna('')  if sit_col  else pd.Series([EXPERT_SITUACAO_ATIVA]*len(df))
+        vinc = df[vinc_col].map(norm_ascii).fillna('') if vinc_col else pd.Series(['']*len(df))
+
+        inativo_mask = sit != norm_ascii(EXPERT_SITUACAO_ATIVA)
+        active_mask  = ~inativo_mask
+
+        pj_mask  = active_mask & (
+            vinc.str.contains('contribuinte', na=False) |
+            (vinc.str.contains('diretor', na=False) & vinc.str.contains('fgts', na=False))
+        )
+        est_mask = active_mask & ~pj_mask & (
+            vinc.str.contains('estagiario|estagiário|estágio|estagio', na=False)
+        )
+        apr_mask = active_mask & ~pj_mask & ~est_mask & (
+            vinc.str.contains('aprendiz', na=False)
+        )
+        ativ_mask = active_mask & ~pj_mask & ~est_mask & ~apr_mask
+
+        def _tag(sub_df, motivo):
+            recs = sub_df.to_dict('records')
+            for r in recs: r['_motivo'] = motivo
+            return recs
+
+        ativos_rows    = [_to_expert_row(r, final_map) for r in df[ativ_mask].to_dict('records')]
+        inativos_rows  = [_to_expert_inativo_row(r, final_map) for r in df[inativo_mask].to_dict('records')]
+        excluidos_rows = (_tag(df[pj_mask],  'Pessoa Jurídica (PJ)') +
+                          _tag(df[est_mask],  'Estagiário') +
+                          _tag(df[apr_mask],  'Menor Aprendiz'))
+
+        write_fast_excel(ativos_rows,   os.path.join(session_dir, 'expert_ativos.xlsx'),   'Ativos',   EXPERT_COLS)
+        write_fast_excel(inativos_rows, os.path.join(session_dir, 'expert_inativos.xlsx'), 'Inativos', EXPERT_INATIVOS_COLS)
+        _write_expert_csv(ativos_rows,    os.path.join(session_dir, 'expert_ativos.csv'))
+        _write_expert_csv(inativos_rows,  os.path.join(session_dir, 'expert_inativos.csv'), EXPERT_INATIVOS_COLS)
+
+        ppt_ok = _generate_expert_ppt(
+            ativos_rows,
+            inativos_rows,
+            excluidos_rows,
+            os.path.join(session_dir, 'expert_ppt.pptx')
+        )
+
+        def count_reasons(rows):
+            c = {}
+            for r in rows:
+                m = r.get('_motivo', 'Outro')
+                c[m] = c.get(m, 0) + 1
+            return c
+        return jsonify({
+            'total': len(df), 'ativos': len(ativos_rows),
+            'inativos': len(inativos_rows), 'excluidos': len(excluidos_rows),
+            'reasons': count_reasons(excluidos_rows),
+            'ppt_available': ppt_ok,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({'error': str(e), 'detail': traceback.format_exc()}), 500
+
+
+@app.route('/api/download/<session_id>/expert_ativos_excel')
+def download_expert_ativos_excel(session_id):
+    p = os.path.join(TEMP_DIR, session_id, 'expert_ativos.xlsx')
+    if not os.path.exists(p): return 'Não encontrado.', 404
+    return send_file(p, as_attachment=True, download_name='Expert_Ativos.xlsx')
+
+@app.route('/api/download/<session_id>/expert_inativos_excel')
+def download_expert_inativos_excel(session_id):
+    p = os.path.join(TEMP_DIR, session_id, 'expert_inativos.xlsx')
+    if not os.path.exists(p): return 'Não encontrado.', 404
+    return send_file(p, as_attachment=True, download_name='Expert_Inativos.xlsx')
+
+@app.route('/api/download/<session_id>/expert_ativos_csv')
+def download_expert_ativos_csv(session_id):
+    p = os.path.join(TEMP_DIR, session_id, 'expert_ativos.csv')
+    if not os.path.exists(p): return 'Não encontrado.', 404
+    return send_file(p, as_attachment=True, download_name='Expert_Ativos.csv')
+
+@app.route('/api/download/<session_id>/expert_inativos_csv')
+def download_expert_inativos_csv(session_id):
+    p = os.path.join(TEMP_DIR, session_id, 'expert_inativos.csv')
+    if not os.path.exists(p): return 'Não encontrado.', 404
+    return send_file(p, as_attachment=True, download_name='Expert_Inativos.csv')
+
+@app.route('/api/download/<session_id>/expert_ppt')
+def download_expert_ppt(session_id):
+    session_dir = os.path.join(TEMP_DIR, session_id)
+    p = os.path.join(session_dir, 'expert_ppt.pptx')
+    if not os.path.exists(p):
+        ativos_path = os.path.join(session_dir, 'expert_ativos.xlsx')
+        inativos_path = os.path.join(session_dir, 'expert_inativos.xlsx')
+        if not os.path.exists(ativos_path) or not os.path.exists(inativos_path):
+            return 'PPT não encontrado. Processe a base Expert antes de baixar a apresentação.', 404
+        try:
+            ativos = pd.read_excel(ativos_path, dtype=str).fillna('').to_dict('records')
+            inativos = pd.read_excel(inativos_path, dtype=str).fillna('').to_dict('records')
+            if not _generate_expert_ppt(ativos, inativos, [], p):
+                return 'Dependência ausente para gerar PPT. Instale python-pptx.', 500
+        except Exception as e:
+            return f'Erro ao gerar PPT Expert: {str(e)}', 500
+    return send_file(p, as_attachment=True, download_name='Expert_Apresentacao_Executiva.pptx')
+
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     print('=' * 50)

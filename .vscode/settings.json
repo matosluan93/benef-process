@@ -1,0 +1,18 @@
+{
+  "files.exclude": {
+    "temp": true,
+    "**/temp": true,
+    "__pycache__": true,
+    "**/__pycache__": true
+  },
+  "search.exclude": {
+    "temp": true,
+    "**/temp": true,
+    "__pycache__": true,
+    "**/__pycache__": true
+  },
+  "files.watcherExclude": {
+    "**/temp/**": true,
+    "**/__pycache__/**": true
+  }
+}

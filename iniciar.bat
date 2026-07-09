@@ -10,6 +10,10 @@ echo   Stefanini - Gente e Cultura
 echo  ============================================
 echo.
 
+echo  Encerrando servidores BenefProcess antigos...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*app.py*' -and $_.CommandLine -like '*benef-process*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>nul
+echo.
+
 :: Verifica se o ambiente virtual ja existe
 if not exist "venv\Scripts\python.exe" (
     echo  [1/3] Criando ambiente virtual...
@@ -21,14 +25,20 @@ if not exist "venv\Scripts\python.exe" (
         exit /b 1
     )
     echo.
-
-    echo  [2/3] Instalando dependencias...
-    venv\Scripts\pip install -r requirements.txt --quiet
-    echo.
 ) else (
-    echo  Ambiente virtual encontrado. Pulando instalacao.
+    echo  [1/3] Ambiente virtual encontrado.
     echo.
 )
+
+echo  [2/3] Conferindo dependencias...
+venv\Scripts\pip install -r requirements.txt --quiet
+if errorlevel 1 (
+    echo.
+    echo  ERRO: Falha ao instalar dependencias.
+    pause
+    exit /b 1
+)
+echo.
 
 echo  [3/3] Iniciando servidor...
 echo.

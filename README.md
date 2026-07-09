@@ -1,102 +1,98 @@
 # BenefProcess
-**Tratamento automatizado de bases de benefícios · Stefanini**
 
----
+Tratamento automatizado de bases de benefícios da Stefanini, com processamento 100% local.
 
-## O que faz
+## O Que Faz
 
-Recebe **1 arquivo Excel com 3 abas** (Stefanini, Topaz, IHM) e gera
-**3 planilhas tratadas** prontas para envio aos fornecedores:
+O sistema roda em Flask e oferece três fluxos pela interface web:
 
-| Saída | Regra principal |
+- Base principal: Stefanini, Topaz e IHM para TotalPass, Wellhub e New Value.
+- Mar Saúde: gera elegíveis e auditoria de excluídos PJ.
+- Expert: separa ativos, inativos e removidos, com Excel, CSV e apresentação PPT.
+
+## Saídas
+
+| Fluxo | Arquivos gerados |
 |---|---|
-| `Base_TotalPass_Tratada.xlsx` | Remove estagiários, aprendizes, terceiros e PJ |
-| `Base_Wellhub_Tratada.xlsx` | Mantém CLT com desconto em folha habilitado |
-| `Base_NewValue_Tratada.xlsx` | Remove apenas PJ |
-| `Base_Auditoria_Exclusoes.xlsx` | Todos os removidos com motivo + data |
+| TotalPass | Excel tratado e CSV |
+| Wellhub | ZIP com Excel por empresa e ZIP com CSVs |
+| New Value | Excel tratado e CSV |
+| Auditoria | Excel de exclusões e PPT de auditoria |
+| Mar Saúde | Excel de elegíveis, CSV de elegíveis e Excel de excluídos |
+| Expert | Excel/CSV de ativos, Excel/CSV de inativos e PPT executivo |
 
-**Regras aplicadas em todos os processos:**
-- Remove admissões futuras (data > hoje)
-- Remove e-mails inválidos ou ausentes
-- Remove registros duplicados por e-mail
+## Regras Principais
 
----
+Base principal:
 
-## Pré-requisito
+- Remove admissões futuras.
+- Remove e-mails inválidos ou ausentes.
+- Remove duplicidades por CPF.
+- TotalPass remove estagiários, aprendizes, terceiros e PJ.
+- Wellhub mantém colaboradores elegíveis com desconto em folha habilitado.
+- New Value remove PJ.
 
-Python 3.10 ou superior instalado → [python.org](https://www.python.org/downloads/)
+Mar Saúde:
 
----
+- Remove PJ por `Nome Sindicato = Somente PJ`.
+- Remove PJ por `Desc. Tipo de Vínculo = OUTROS` ou termos equivalentes a PJ.
 
-## Como usar
+Expert:
 
-### Opção A — Duplo clique (mais fácil)
-Execute o arquivo **`iniciar.bat`** (na primeira vez, instala as dependências automaticamente).
+- Somente `Desc. Situação = Ativo` entra em ativos.
+- Qualquer outra situação entra em inativos, mantendo a situação original no arquivo.
+- Remove ativos que sejam PJ, estagiários ou aprendizes conforme o vínculo/categoria.
 
-### Opção B — Git Bash
+## Pré-Requisitos
+
+- Python 3.10 ou superior.
+- Navegador para acessar `http://localhost:5050`.
+
+## Como Usar
+
+### Windows
+
+Dê duplo clique em `iniciar.bat`.
+
+O script cria o ambiente virtual, confere as dependências e inicia o servidor.
+
+### Git Bash
+
 ```bash
 bash iniciar.sh
 ```
 
-### Opção C — Manual
+### Manual
+
 ```bash
-# Criar e ativar ambiente virtual
 py -m venv venv
-source venv/Scripts/activate   # Git Bash
-# ou: venv\Scripts\activate.bat  (cmd.exe)
-
-# Instalar dependências
+venv\Scripts\activate
 pip install -r requirements.txt
-
-# Iniciar
 py app.py
 ```
 
-Acesse no navegador: **http://localhost:5050**
+Depois acesse:
 
----
-
-## Estrutura do projeto
-
+```text
+http://localhost:5050
 ```
+
+## Estrutura
+
+```text
 benef-process/
-├── app.py              → Servidor Flask (regras de negócio)
-├── requirements.txt    → Dependências Python
-├── iniciar.bat         → Inicialização Windows (cmd.exe)
-├── iniciar.sh          → Inicialização Git Bash
+├── app.py              Servidor Flask e regras de negócio
+├── ppt_generator.py    Geração do PPT de auditoria
+├── requirements.txt    Dependências Python
+├── iniciar.bat         Inicialização Windows
+├── iniciar.sh          Inicialização Git Bash/Linux
 ├── templates/
-│   └── index.html      → Interface web (sem dependências externas)
-└── temp/               → Arquivos temporários (criado automaticamente)
+│   └── index.html      Interface web
+└── temp/               Arquivos temporários gerados pelo processamento
 ```
-
----
-
-## Fluxo de uso
-
-```
-1. Upload      → Envie o .xlsx com as 3 abas
-2. Abas        → Confirme qual aba = Stefanini / Topaz / IHM
-3. Colunas     → Confirme o mapeamento de campos (auto-detectado)
-4. Revisão     → Veja a prévia consolidada
-5. Resultado   → Baixe os 3 arquivos tratados + auditoria
-```
-
----
-
-## Formato esperado do Excel de entrada
-
-| Empresa | CNPJ | Nome | Matrícula | E-mail | Tipo de Vínculo | Data de Admissão | Desconto em Folha |
-|---|---|---|---|---|---|---|---|
-
-Os nomes exatos das colunas podem variar — o sistema detecta automaticamente.
-
-**Desconto em folha (Wellhub):** valores aceitos como habilitado:
-`Sim`, `S`, `Ativo`, `Habilitado`, `1`, `Yes`, `OK` (não diferencia maiúsculas/minúsculas)
-
----
 
 ## Observações
 
-- Os arquivos temporários ficam na pasta `temp/` e podem ser apagados manualmente
-- Nenhum dado é enviado para a internet — processamento 100% local
-- Para limpar a pasta temp: apague o conteúdo de `temp/` manualmente
+- A pasta `temp/` pode crescer bastante e pode ser limpa manualmente quando não houver sessões em uso.
+- Nenhum arquivo é enviado para a internet.
+- Arquivos `app_backup*.py`, `fix_*.py` e `add_*.py` são históricos de manutenção e não fazem parte do fluxo principal de execução.
