@@ -1,75 +1,74 @@
 # BenefProcess
 
-Tratamento automatizado de bases de benefícios da Stefanini, com processamento 100% local.
+![Python](https://img.shields.io/badge/Python-3.10%2B-0F2A56)
+![Flask](https://img.shields.io/badge/Flask-Web%20local-00A98B)
+![Status](https://img.shields.io/badge/status-produ%C3%A7%C3%A3o%20local-1D4E89)
+![Privacidade](https://img.shields.io/badge/processamento-100%25%20local-64748B)
 
-## O Que Faz
+Aplicação web local para tratamento, auditoria e exportação de bases de benefícios da Stefanini.
 
-O sistema roda em Flask e oferece três fluxos pela interface web:
+O sistema consolida planilhas, aplica regras de elegibilidade por cliente e gera arquivos finais em Excel, CSV, ZIP e apresentações executivas em PowerPoint.
 
-- Base principal: Stefanini, Topaz e IHM para TotalPass, Wellhub e New Value.
-- Mar Saúde: gera elegíveis e auditoria de excluídos PJ.
-- Expert: separa ativos, inativos e removidos, com Excel, CSV e apresentação PPT.
+## Visão Geral
 
-## Saídas
+BenefProcess foi criado para transformar bases operacionais em entregáveis prontos para envio e apresentação executiva.
 
-| Fluxo | Arquivos gerados |
-|---|---|
-| TotalPass | Excel tratado e CSV |
-| Wellhub | ZIP com Excel por empresa e ZIP com CSVs |
-| New Value | Excel tratado e CSV |
-| Auditoria | Excel de exclusões e PPT de auditoria |
-| Mar Saúde | Excel de elegíveis, CSV de elegíveis e Excel de excluídos |
-| Expert | Excel/CSV de ativos, Excel/CSV de inativos e PPT executivo |
+Principais objetivos:
+
+- Padronizar bases de benefícios.
+- Reduzir análise manual.
+- Registrar motivos de exclusão.
+- Gerar arquivos nos layouts dos clientes.
+- Manter o processamento local, sem envio de arquivos para a internet.
+
+## Fluxos Disponíveis
+
+| Fluxo | Entrada | Saídas |
+|---|---|---|
+| TotalPass | Base consolidada Stefanini, Topaz e IHM | Excel tratado e CSV no layout do cliente |
+| Wellhub | Base consolidada Stefanini, Topaz e IHM | ZIP com Excel por empresa e ZIP com CSVs |
+| New Value | Base consolidada Stefanini, Topaz e IHM | Excel tratado e CSV no layout do cliente |
+| Auditoria | Resultado das exclusões da base principal | Excel de auditoria e PPT executivo |
+| Mar Saúde | Base Mar Saúde | Excel, CSV e auditoria de exclusões |
+| Expert | Base Expert | Ativos, inativos, removidos e PPT executivo |
 
 ## Regras Principais
 
-Base principal:
+### Base Principal
 
 - Remove admissões futuras.
-- Remove e-mails inválidos ou ausentes.
-- Remove duplicidades por CPF.
+- Remove e-mails ausentes ou inválidos.
+- Remove registros duplicados por CPF.
+- Prioriza ocorrência não-PJ quando o mesmo CPF aparece em mais de uma aba.
 - TotalPass remove estagiários, aprendizes, terceiros e PJ.
-- Wellhub mantém colaboradores elegíveis com desconto em folha habilitado.
-- New Value remove PJ.
+- Wellhub mantém registros elegíveis por empresa/CNPJ habilitado.
+- New Value remove apenas PJ, além das validações gerais.
 
-Mar Saúde:
+### Mar Saúde
 
-- Remove PJ por `Nome Sindicato = Somente PJ`.
-- Remove PJ por `Desc. Tipo de Vínculo = OUTROS` ou termos equivalentes a PJ.
+- Remove PJ por sindicato.
+- Remove PJ por vínculo/categoria quando houver indicação equivalente.
+- Gera arquivo final de elegíveis e auditoria de removidos.
 
-Expert:
+### Expert
 
-- Somente `Desc. Situação = Ativo` entra em ativos.
-- Qualquer outra situação entra em inativos, mantendo a situação original no arquivo.
-- Remove ativos que sejam PJ, estagiários ou aprendizes conforme o vínculo/categoria.
+- Usa `Desc. Situação` como coluna de referência quando disponível.
+- Envia para ativos somente registros com situação `Ativo`.
+- Envia para inativos qualquer situação diferente de `Ativo`.
+- Remove PJ, estagiários e aprendizes conforme vínculo/categoria.
+- Gera apresentação executiva para diretoria.
 
-## Pré-Requisitos
-
-- Python 3.10 ou superior.
-- Navegador para acessar `http://localhost:5050`.
-
-## Como Usar
+## Como Rodar Localmente
 
 ### Windows
 
-Dê duplo clique em `iniciar.bat`.
+Execute:
 
-O script cria o ambiente virtual, confere as dependências e inicia o servidor.
-
-### Git Bash
-
-```bash
-bash iniciar.sh
+```powershell
+.\iniciar.bat
 ```
 
-### Manual
-
-```bash
-py -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-py app.py
-```
+O script cria/ativa o ambiente virtual, instala dependências e inicia o servidor.
 
 Depois acesse:
 
@@ -77,22 +76,78 @@ Depois acesse:
 http://localhost:5050
 ```
 
-## Estrutura
+### Git Bash ou Linux
+
+```bash
+bash iniciar.sh
+```
+
+### Execução Manual
+
+```powershell
+py -m venv venv
+.\venv\Scripts\activate
+pip install -r requirements.txt
+py app.py
+```
+
+## Estrutura do Projeto
 
 ```text
 benef-process/
-├── app.py              Servidor Flask e regras de negócio
-├── ppt_generator.py    Geração do PPT de auditoria
-├── requirements.txt    Dependências Python
-├── iniciar.bat         Inicialização Windows
-├── iniciar.sh          Inicialização Git Bash/Linux
+├── app.py                 Regras, rotas Flask e geração dos arquivos
+├── ppt_generator.py       Geração do PPT executivo da auditoria
+├── requirements.txt       Dependências Python
+├── iniciar.bat            Inicialização no Windows
+├── iniciar.sh             Inicialização via shell
 ├── templates/
-│   └── index.html      Interface web
-└── temp/               Arquivos temporários gerados pelo processamento
+│   └── index.html         Interface web da aplicação
+└── temp/                  Arquivos temporários gerados localmente
 ```
 
-## Observações
+## Arquivos Gerados
 
-- A pasta `temp/` pode crescer bastante e pode ser limpa manualmente quando não houver sessões em uso.
-- Nenhum arquivo é enviado para a internet.
-- Arquivos `app_backup*.py`, `fix_*.py` e `add_*.py` são históricos de manutenção e não fazem parte do fluxo principal de execução.
+A pasta `temp/` é criada automaticamente durante o uso da aplicação.
+
+Ela pode conter:
+
+- Bases enviadas pelo usuário.
+- Excel tratado.
+- CSV de clientes.
+- ZIPs por empresa.
+- PPTs gerados.
+- Arquivos de auditoria.
+
+Esses arquivos não fazem parte do código-fonte e não devem ser enviados para o GitHub.
+
+## Segurança e Privacidade
+
+- O processamento é local.
+- Nenhuma planilha é enviada para serviços externos.
+- Arquivos de saída ficam na pasta `temp/` do projeto.
+- O repositório mantém apenas código, dependências e documentação.
+
+## Dependências Principais
+
+- Flask
+- pandas
+- openpyxl
+- xlsxwriter
+- python-pptx
+- lxml
+
+## Manutenção do Repositório
+
+O GitHub deve manter apenas os arquivos essenciais da aplicação.
+
+Não devem ser versionados:
+
+- `temp/`
+- `__pycache__/`
+- `venv/`
+- arquivos `.pyc`
+- scripts antigos de correção `fix_*.py`
+- scripts antigos de adição `add_*.py`
+- backups locais
+
+Isso mantém o repositório leve, limpo e seguro para baixar em outra máquina.

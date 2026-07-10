@@ -8,3 +8,12 @@ temp/
 .vscode/
 .env
 .env.*
+
+# Arquivos de manutenção/histórico local
+add_*.py
+fix_*.py
+fix.py
+patch_html.py
+app_backup*.py
+app,py.py
+.git-clean-list.txt
