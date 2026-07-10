@@ -970,27 +970,57 @@
     <div class="expert-header">
       <h3 style="font-weight:800;font-size:20px;letter-spacing:-.3px">Expert</h3>
       <span class="expert-badge">STEFANINI</span>
-      <span style="font-size:12px;color:#94A3B8;margin-left:4px">· Somente Stefanini · Remove PJ e Estagiários</span>
+      <span style="font-size:12px;color:#94A3B8;margin-left:4px">· Duas bases: Ativos e Desligados · Remove PJ e Estagiários</span>
     </div>
 
     <!-- Upload Expert -->
     <div id="expertUpload">
-      <div class="dropzone" id="expertDropzone" onclick="document.getElementById('expertFileInput').click()"
-           style="padding:40px;border-radius:12px">
-        <div class="icon" style="font-size:38px">📂</div>
-        <div class="label" style="font-size:15px">Clique ou arraste a base Expert</div>
-        <div class="sub">Formatos aceitos: .xlsx · .xls · .csv</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
+        <div class="dropzone" id="expertActiveDropzone" onclick="document.getElementById('expertActiveFileInput').click()"
+             style="padding:32px;border-radius:12px">
+          <div class="icon" style="font-size:34px">📂</div>
+          <div class="label" style="font-size:15px">Base Expert - Ativos</div>
+          <div class="sub">Ativos, licenças, afastamentos e situações aprovadas</div>
+          <div id="expertActiveFileName" class="sub" style="margin-top:8px;font-weight:700;color:#10B981"></div>
+        </div>
+        <div>
+          <div class="dropzone" id="expertInactiveDropzone" onclick="document.getElementById('expertInactiveFileInput').click()"
+               style="padding:32px;border-radius:12px">
+            <div class="icon" style="font-size:34px">📁</div>
+            <div class="label" style="font-size:15px">Base Expert - Desligados</div>
+            <div class="sub">Profissionais desligados/desativados</div>
+            <div id="expertInactiveFileName" class="sub" style="margin-top:8px;font-weight:700;color:#64748B"></div>
+          </div>
+          <div style="display:flex;gap:12px;align-items:flex-end;margin-top:12px;flex-wrap:wrap;background:#fff;border:1px solid #D9E2EF;border-radius:12px;padding:12px 14px">
+            <div>
+              <label style="font-size:12px;font-weight:600;color:#475569;display:block;margin-bottom:4px">Desligados de</label>
+              <input type="date" id="expertInactiveStartDate" style="padding:8px 12px;border-radius:7px;border:1px solid #CBD5E1;font-size:13px;min-width:155px">
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:600;color:#475569;display:block;margin-bottom:4px">Desligados até</label>
+              <input type="date" id="expertInactiveEndDate" style="padding:8px 12px;border-radius:7px;border:1px solid #CBD5E1;font-size:13px;min-width:155px">
+            </div>
+          </div>
+        </div>
       </div>
-      <input type="file" id="expertFileInput" accept=".xlsx,.xls,.csv" style="display:none"
-             onchange="handleExpertFile(event)"/>
+      <div class="sub" style="margin-top:10px">Formatos aceitos: .xlsx · .xls · .csv</div>
+      <div class="sub" style="margin-top:4px">O período dos desligados é opcional; quando preenchido, filtra pela data de desligamento/demissão.</div>
+      <input type="file" id="expertActiveFileInput" accept=".xlsx,.xls,.csv" style="display:none"
+             onchange="handleExpertFile(event, 'ativos')"/>
+      <input type="file" id="expertInactiveFileInput" accept=".xlsx,.xls,.csv" style="display:none"
+             onchange="handleExpertFile(event, 'desligados')"/>
     </div>
 
     <!-- Sheet + Column mapping -->
     <div id="expertMapping" style="display:none;margin-top:18px">
       <div style="display:flex;gap:14px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
         <div>
-          <label style="font-size:12px;font-weight:600;color:#475569;display:block;margin-bottom:4px">Aba / Planilha</label>
-          <select id="expertSheetSel" style="padding:8px 12px;border-radius:7px;border:1px solid #CBD5E1;font-size:13px;min-width:200px"></select>
+          <label style="font-size:12px;font-weight:600;color:#475569;display:block;margin-bottom:4px">Aba / Planilha - Ativos</label>
+          <select id="expertActiveSheetSel" style="padding:8px 12px;border-radius:7px;border:1px solid #CBD5E1;font-size:13px;min-width:200px"></select>
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:600;color:#475569;display:block;margin-bottom:4px">Aba / Planilha - Desligados</label>
+          <select id="expertInactiveSheetSel" style="padding:8px 12px;border-radius:7px;border:1px solid #CBD5E1;font-size:13px;min-width:200px"></select>
         </div>
         <button class="btn btn-primary btn-sm" onclick="loadExpertColumns()" style="padding:9px 18px;font-size:13px">
           Detectar colunas →
@@ -1585,7 +1615,15 @@ function dlMs(type) {
 }
 
 // ─── Expert ────────────────────────────────────────────────────────────────────
-const EX = { sessionId: null, sheetNames: [], colMap: {}, headers: [] };
+const EX = {
+  sessionId: null,
+  activeSheetNames: [],
+  inactiveSheetNames: [],
+  colMap: {},
+  headers: [],
+  activeUploaded: false,
+  inactiveUploaded: false,
+};
 
 const EXPERT_FIELDS = [
   { key: 'nome_unidade',  label: 'Nome Unidade',               req: true  },
@@ -1595,52 +1633,77 @@ const EXPERT_FIELDS = [
   { key: 'nome',          label: 'Nome Funcionário',           req: true  },
   { key: 'dt_nascimento', label: 'Dt.Nascimento',              req: false },
   { key: 'sexo',          label: 'Sexo',                       req: false },
-  { key: 'situacao',      label: 'Desc. Situação',             req: true  },
+  { key: 'situacao',      label: 'Desc. Situação',             req: false },
   { key: 'dt_admissao',   label: 'Dt.Admissão',               req: true  },
+  { key: 'dt_desligamento', label: 'Data de desligamento',     req: false },
   { key: 'cpf',           label: 'CPF',                        req: true  },
   { key: 'cbo',           label: 'CBO',                        req: false },
   { key: 'nome_mae',      label: 'Nome da Mae do Funcionário', req: false },
   { key: 'razao_social',  label: 'Razão Social',               req: true  },
   { key: 'cnpj',          label: 'CNPJ',                       req: true  },
   { key: 'cod_categoria', label: 'Código Categoria (eSocial)', req: false },
+  { key: 'tipo_vinculo',  label: 'Desc. Tipo de Vínculo',      req: false },
+  { key: 'nome_sindicato',label: 'Nome Sindicato',             req: false },
 ];
 
 // Expert section is always visible (independent section)
 
-const expertDz = document.getElementById('expertDropzone');
-expertDz.addEventListener('dragover',  e => { e.preventDefault(); expertDz.classList.add('drag'); });
-expertDz.addEventListener('dragleave', () => expertDz.classList.remove('drag'));
-expertDz.addEventListener('drop', e => {
-  e.preventDefault(); expertDz.classList.remove('drag');
-  if (e.dataTransfer.files[0]) uploadExpert(e.dataTransfer.files[0]);
-});
+function setupExpertDropzone(id, sourceType) {
+  const dz = document.getElementById(id);
+  dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag');
+    if (e.dataTransfer.files[0]) uploadExpert(e.dataTransfer.files[0], sourceType);
+  });
+}
 
-function handleExpertFile(e) { if (e.target.files[0]) uploadExpert(e.target.files[0]); }
+setupExpertDropzone('expertActiveDropzone', 'ativos');
+setupExpertDropzone('expertInactiveDropzone', 'desligados');
 
-async function uploadExpert(file) {
-  showLoading('Carregando base Expert...');
-  const fd = new FormData(); fd.append('file', file);
+function handleExpertFile(e, sourceType) {
+  if (e.target.files[0]) uploadExpert(e.target.files[0], sourceType);
+}
+
+async function uploadExpert(file, sourceType) {
+  const label = sourceType === 'desligados' ? 'base de desligados Expert' : 'base de ativos Expert';
+  showLoading('Carregando ' + label + '...');
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('source_type', sourceType);
+  if (EX.sessionId) fd.append('session_id', EX.sessionId);
   try {
     const res  = await fetch('/api/upload-expert', { method:'POST', body: fd });
     const data = await res.json();
     hideLoading();
     if (data.error) { showAlert(data.error); return; }
-    EX.sessionId  = data.session_id;
-    EX.sheetNames = data.sheet_names;
-    const sel = document.getElementById('expertSheetSel');
-    sel.innerHTML = EX.sheetNames.map(s => `<option value="${s}">${s}</option>`).join('');
-    document.getElementById('expertMapping').style.display = 'block';
+    EX.sessionId = data.session_id;
+    if (sourceType === 'desligados') {
+      EX.inactiveSheetNames = data.sheet_names;
+      EX.inactiveUploaded = true;
+      document.getElementById('expertInactiveFileName').textContent = data.filename;
+      const sel = document.getElementById('expertInactiveSheetSel');
+      sel.innerHTML = EX.inactiveSheetNames.map(s => `<option value="${s}">${s}</option>`).join('');
+    } else {
+      EX.activeSheetNames = data.sheet_names;
+      EX.activeUploaded = true;
+      document.getElementById('expertActiveFileName').textContent = data.filename;
+      const sel = document.getElementById('expertActiveSheetSel');
+      sel.innerHTML = EX.activeSheetNames.map(s => `<option value="${s}">${s}</option>`).join('');
+    }
+    if (EX.activeUploaded) document.getElementById('expertMapping').style.display = 'block';
     document.getElementById('expertResults').style.display  = 'none';
   } catch(e) { hideLoading(); showAlert('Erro: ' + e.message); }
 }
 
 async function loadExpertColumns() {
-  const sheet = document.getElementById('expertSheetSel').value;
+  if (!EX.activeUploaded) { showAlert('Envie primeiro a base de ativos do Expert.'); return; }
+  const sheet = document.getElementById('expertActiveSheetSel').value;
   showLoading('Detectando colunas...');
   try {
     const res  = await fetch('/api/get-columns-expert', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ session_id: EX.sessionId, sheet_name: sheet }),
+      body: JSON.stringify({ session_id: EX.sessionId, sheet_name: sheet, source_type: 'ativos' }),
     });
     const data = await res.json();
     hideLoading();
@@ -1682,12 +1745,26 @@ function renderExpertColMap() {
 }
 
 async function processExpert() {
-  const sheet = document.getElementById('expertSheetSel').value;
+  if (!EX.activeUploaded || !EX.inactiveUploaded) {
+    showAlert('Envie as duas bases do Expert: Ativos e Desligados.');
+    return;
+  }
+  const activeSheet = document.getElementById('expertActiveSheetSel').value;
+  const inactiveSheet = document.getElementById('expertInactiveSheetSel').value;
+  const inactiveStartDate = document.getElementById('expertInactiveStartDate').value;
+  const inactiveEndDate = document.getElementById('expertInactiveEndDate').value;
   showLoading('Processando Expert...');
   try {
     const res  = await fetch('/api/process-expert', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ session_id: EX.sessionId, sheet_name: sheet, col_map: EX.colMap }),
+      body: JSON.stringify({
+        session_id: EX.sessionId,
+        active_sheet_name: activeSheet,
+        inactive_sheet_name: inactiveSheet,
+        inactive_start_date: inactiveStartDate,
+        inactive_end_date: inactiveEndDate,
+        col_map: EX.colMap,
+      }),
     });
     const data = await res.json();
     hideLoading();
@@ -1706,7 +1783,7 @@ function renderExpertResults(data) {
   const cards = [
     { cls:'ativos',    title:'Ativos',    num: data.ativos,
       btns:[['Excel','#10B981','expert_ativos_excel'],['CSV','#10B981','expert_ativos_csv']] },
-    { cls:'inativos',  title:'Inativos',  num: data.inativos,
+    { cls:'inativos',  title:'Inativos / Desligados',  num: data.inativos,
       btns:[['Excel','#64748B','expert_inativos_excel'],['CSV','#64748B','expert_inativos_csv']] },
     { cls:'removidos', title:'Removidos', num: data.excluidos, reasons: data.reasons, btns:[] },
   ];

@@ -1167,15 +1167,27 @@ EXPERT_COLS = [
 ]
 
 EXPERT_INATIVOS_COLS = [
-    'Nome Funcionário', 'Situação Original', 'Motivo Inativação',
+    'Nome Funcionário', 'Situação Original', 'Motivo Inativação', 'Dt.Desligamento',
     'Matrícula', 'CPF', 'Dt.Nascimento', 'Sexo', 'Dt.Admissão',
     'Nome Unidade', 'Nome Setor', 'Nome Cargo', 'CBO',
     'Nome da Mae do Funcionário', 'Razão Social', 'CNPJ',
     'Código Categoria (eSocial)',
 ]
 
-# Expert: coluna AC (Desc. Situação) — somente 'Ativo' é ativo
+# Expert: a base de ativos agora e enviada separada da base de desligados.
+# As situacoes abaixo, quando vierem na base de ativos, permanecem como ativas.
 EXPERT_SITUACAO_ATIVA    = 'ativo'
+EXPERT_SITUACOES_ATIVAS  = {
+    'ativo',
+    'licenca gestacao',
+    'afastado inss ate 15',
+    'licen.nao remunerada',
+    'outros-proc judicial',
+    'processo de abandono',
+    'afastamento inss >15',
+    'acid. trabalho > 15',
+    'aposent. invalidez',
+}
 SITUACAO_INATIVO_CODES   = {'90','91','92','93','95','96','99','9a','9A'}
 
 EXPERT_COL_ALIASES = {
@@ -1194,6 +1206,12 @@ EXPERT_COL_ALIASES = {
                       'status', 'sit.'],
     'dt_admissao':   ['data de admissão', 'data de admissao', 'dt.admissão', 'dt.admissao',
                       'dt admissão', 'dt admissao', 'admissão'],
+    'dt_desligamento': ['data de desligamento', 'dt.desligamento', 'dt desligamento',
+                        'data desligamento', 'desligamento', 'data demissão',
+                        'data demissao', 'dt.demissão', 'dt.demissao', 'dt demissão',
+                        'dt demissao', 'demissão', 'demissao', 'data de rescisão',
+                        'data de rescisao', 'data rescisão', 'data rescisao',
+                        'dt.rescisão', 'dt.rescisao', 'dt rescisão', 'dt rescisao'],
     'cpf':           ['número de cpf', 'numero de cpf', 'cpf', 'nr cpf', 'pis/pasep'],
     'cbo':           ['id. cbo', 'cbo', 'cbo 2002', 'cod cbo', 'código cbo', 'cód. cbo'],
     'nome_mae':      ['nome mãe', 'nome mae', 'nome da mae do funcionário', 'nome da mae'],
@@ -1248,6 +1266,7 @@ COL_WIDTHS.update({
     'Nome da Mae do Funcionário': 42, 'Razão Social': 40,
     'Código Categoria (eSocial)': 30,
     'Situação Original': 26, 'Motivo Inativação': 34,
+    'Dt.Desligamento': 16,
 })
 
 
@@ -1319,13 +1338,14 @@ def _to_expert_row(row, col_map):
     }
 
 
-def _to_expert_inativo_row(row, col_map):
+def _to_expert_inativo_row(row, col_map, motivo='Base de desligados'):
     base = _to_expert_row(row, col_map)
     situacao = base.get('Situação') or clean_val(row.get(col_map.get('situacao', ''), ''))
     return {
         'Nome Funcionário':           base.get('Nome Funcionário', ''),
         'Situação Original':          situacao,
-        'Motivo Inativação':          'Desc. Situação diferente de Ativo',
+        'Motivo Inativação':          motivo,
+        'Dt.Desligamento':            format_date_val(row.get(col_map.get('dt_desligamento', ''), '')),
         'Matrícula':                  base.get('Matrícula', ''),
         'CPF':                        base.get('CPF', ''),
         'Dt.Nascimento':              base.get('Dt.Nascimento', ''),
@@ -1350,6 +1370,103 @@ def _write_expert_csv(rows, filepath, columns=None):
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def _expert_source_prefix(source_type):
+    return 'expert_desligados_source' if source_type == 'desligados' else 'expert_ativos_source'
+
+
+def _find_expert_source(session_dir, source_type='ativos'):
+    prefix = _expert_source_prefix(source_type)
+    return next((os.path.join(session_dir, fn)
+                 for fn in os.listdir(session_dir)
+                 if fn.startswith(prefix)), None)
+
+
+def _read_expert_header(src, sheet_name='Planilha1'):
+    ext = os.path.splitext(src)[1].lower()
+    if ext == '.csv':
+        for enc in ['utf-8-sig', 'latin-1', 'utf-8']:
+            try:
+                df = pd.read_csv(src, dtype=str, sep=None, engine='python',
+                                 encoding=enc, nrows=0, na_filter=False)
+                df.attrs['_encoding'] = enc
+                break
+            except Exception:
+                df = None
+        if df is None:
+            raise ValueError('Erro ao ler CSV.')
+    else:
+        df = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
+                           keep_default_na=False, nrows=0)
+    df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+    return df
+
+
+def _read_expert_dataframe(src, sheet_name='Planilha1', col_map_usr=None):
+    col_map_usr = col_map_usr or {}
+    ext = os.path.splitext(src)[1].lower()
+    hdr = _read_expert_header(src, sheet_name)
+    headers = list(hdr.columns)
+    auto = _auto_map_expert(headers)
+    final_map = dict(auto)
+    for k, v in col_map_usr.items():
+        if v and v in headers:
+            final_map[k] = v
+    desc_situacao_col = _prefer_expert_desc_situacao(headers)
+    if desc_situacao_col:
+        final_map['situacao'] = desc_situacao_col
+
+    needed = list({v for v in final_map.values() if v and v in headers})
+
+    if ext == '.csv':
+        df = None
+        for enc in ['utf-8-sig', 'latin-1', 'utf-8']:
+            try:
+                df = pd.read_csv(src, dtype=str, sep=None, engine='python',
+                                 encoding=enc, na_filter=False,
+                                 usecols=needed if needed else None)
+                break
+            except Exception:
+                continue
+        if df is None:
+            raise ValueError('Erro ao ler CSV.')
+    else:
+        df = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
+                           keep_default_na=False,
+                           usecols=needed if needed else None)
+
+    df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+    df = df[df.apply(lambda r: r.astype(str).str.strip().ne('').any(), axis=1)].reset_index(drop=True)
+    for dk in ('dt_admissao', 'dt_nascimento', 'dt_desligamento'):
+        col = final_map.get(dk)
+        if col and col in df.columns:
+            df[col] = df[col].apply(parse_mixed_dates)
+    return df, final_map
+
+
+def _parse_expert_filter_date(value, field_label):
+    if not value:
+        return None
+    dt = pd.to_datetime(str(value), dayfirst=False, errors='coerce')
+    if pd.isna(dt):
+        raise ValueError(f'Data inválida em {field_label}.')
+    return dt.normalize()
+
+
+def _expert_exclusion_reason(row_d, col_map):
+    if _is_pj_expert(row_d, col_map):
+        return 'Pessoa Jurídica (PJ)'
+
+    vinc_cols = [col_map.get('tipo_vinculo', ''), col_map.get('cod_categoria', '')]
+    vinc = ' '.join(norm_ascii(clean_val(row_d.get(c, ''))) for c in vinc_cols if c)
+    if 'contribuinte' in vinc or ('diretor' in vinc and 'fgts' in vinc):
+        return 'Pessoa Jurídica (PJ)'
+    if any(k in vinc for k in ['estagiario', 'estagio']):
+        return 'Estagiário'
+    if 'aprendiz' in vinc:
+        return 'Menor Aprendiz'
+    return None
 
 
 def _generate_expert_ppt(ativos, inativos, excluidos, filepath):
@@ -1553,23 +1670,23 @@ def _generate_expert_ppt(ativos, inativos, excluidos, filepath):
     metric(sl, 9.55, 1.35, 'Removidos por regra', fmt(len(excluidos)), RED, pct(len(excluidos), total))
     txt(sl, 'Leitura executiva', 0.65, 3.15, 4, 0.35, 20, True, NAVY)
     bullet(sl, f'{fmt(impactados)} registros nao seguem como ativos elegiveis e precisam ficar fora do envio principal.', 0.8, 3.75, 11.6, 16)
-    bullet(sl, 'A separacao evita inclusao indevida de profissionais afastados, em licenca, aposentadoria por invalidez ou fora das regras contratuais.', 0.8, 4.25, 11.6, 16)
+    bullet(sl, 'A separacao evita inclusao indevida de profissionais desligados no envio principal e preserva os afastamentos/licencas aprovados como ativos.', 0.8, 4.25, 11.6, 16)
     bullet(sl, 'Os arquivos Excel e CSV preservam o detalhe operacional; esta apresentacao resume os pontos de controle para decisao.', 0.8, 4.75, 11.6, 16)
     footer(sl, 2)
 
     sl = prs.slides.add_slide(blank)
-    title(sl, 'A regra central usa a descricao de situacao como fonte de verdade')
+    title(sl, 'A regra central usa duas bases de entrada como fonte de verdade')
     txt(sl, 'Criterio aplicado', 0.55, 1.25, 4.3, 0.35, 20, True, NAVY)
-    bullet(sl, 'Somente registros com Desc. Situacao igual a Ativo permanecem na base de ativos.', 0.75, 1.8, 5.7)
-    bullet(sl, 'Qualquer outra descricao de situacao e direcionada ao arquivo de inativos.', 0.75, 2.25, 5.7)
-    bullet(sl, 'Registros ativos classificados como PJ, estagiario ou aprendiz sao removidos por regra de elegibilidade.', 0.75, 2.7, 5.7)
+    bullet(sl, 'A base de ativos permanece como envio principal, incluindo licencas, afastamentos e demais situacoes aprovadas.', 0.75, 1.8, 5.7)
+    bullet(sl, 'A base de desligados passa a alimentar o arquivo de inativos/desativados.', 0.75, 2.25, 5.7)
+    bullet(sl, 'Registros da base de ativos classificados como PJ, estagiario ou aprendiz sao removidos por regra de elegibilidade.', 0.75, 2.7, 5.7)
     txt(sl, 'Entregaveis gerados', 7.0, 1.25, 4.3, 0.35, 20, True, NAVY)
     bullet(sl, 'Expert_Ativos.xlsx e Expert_Ativos.csv para envio operacional.', 7.2, 1.8, 5.4)
     bullet(sl, 'Expert_Inativos.xlsx e Expert_Inativos.csv com a situacao original preservada.', 7.2, 2.25, 5.4)
     bullet(sl, 'Apresentacao executiva com visao consolidada e pontos de atencao.', 7.2, 2.7, 5.4)
     rect(sl, 0.8, 4.1, 11.7, 1.5, fill=LGRAY)
     txt(sl, 'Ponto de controle', 1.05, 4.35, 3, 0.28, 17, True, NAVY)
-    txt(sl, 'O processo forca o uso da coluna Desc. Situacao quando ela existe na base, evitando leitura indevida da coluna codificada Situacao.', 1.05, 4.8, 10.8, 0.45, 17, False, TEXT)
+    txt(sl, 'O processo separa a origem dos registros: ativos aprovados em uma base e desligados em outra, reduzindo ambiguidade na leitura de situacao.', 1.05, 4.8, 10.8, 0.45, 17, False, TEXT)
     footer(sl, 3)
 
     sl = prs.slides.add_slide(blank)
@@ -1587,14 +1704,14 @@ def _generate_expert_ppt(ativos, inativos, excluidos, filepath):
     footer(sl, 4)
 
     sl = prs.slides.add_slide(blank)
-    title(sl, 'Os inativos se concentram em afastamentos previdenciarios e licencas')
+    title(sl, 'Os inativos vêm da base de desligados enviada separadamente')
     rows = [['Situacao original', 'Qtd.', '% base', '% inativos']]
     for k, v in list(inativos_counts.items())[:9]:
         rows.append([k, fmt(v), pct(v, total), pct(v, len(inativos))])
     table(sl, 0.75, 1.25, [4.5, 1.0, 1.35, 1.55], rows, font=9)
     txt(sl, 'Interpretacao', 9.1, 1.3, 3, 0.28, 20, True, NAVY)
-    bullet(sl, 'Afastamentos e licencas devem ficar rastreaveis para atualizacao futura.', 9.15, 1.85, 3.6, 14)
-    bullet(sl, 'A preservacao da situacao original reduz retrabalho na validacao com RH.', 9.15, 2.45, 3.6, 14)
+    bullet(sl, 'Afastamentos, licencas e situacoes aprovadas permanecem na base de ativos.', 9.15, 1.85, 3.6, 14)
+    bullet(sl, 'A preservacao da situacao original dos desligados reduz retrabalho na validacao com RH.', 9.15, 2.45, 3.6, 14)
     bullet(sl, 'O detalhe nominativo permanece no arquivo Expert_Inativos.', 9.15, 3.05, 3.6, 14)
     footer(sl, 5)
 
@@ -1656,11 +1773,14 @@ def api_upload_expert():
     f = request.files['file']
     if not f.filename.lower().endswith(('.xlsx', '.xls', '.csv')):
         return jsonify({'error': 'Formato inválido. Envie .xlsx, .xls ou .csv.'}), 400
-    sid = str(uuid.uuid4())
+    source_type = request.form.get('source_type', 'ativos')
+    if source_type not in ('ativos', 'desligados'):
+        source_type = 'ativos'
+    sid = request.form.get('session_id') or str(uuid.uuid4())
     session_dir = os.path.join(TEMP_DIR, sid)
     os.makedirs(session_dir, exist_ok=True)
     ext = os.path.splitext(f.filename)[1].lower()
-    upload_path = os.path.join(session_dir, f'expert_source{ext}')
+    upload_path = os.path.join(session_dir, f'{_expert_source_prefix(source_type)}{ext}')
     f.save(upload_path)
     try:
         if ext == '.csv':
@@ -1678,30 +1798,15 @@ def api_get_columns_expert():
     data        = request.json
     sid         = data.get('session_id')
     sheet_name  = data.get('sheet_name', 'Planilha1')
+    source_type = data.get('source_type', 'ativos')
     session_dir = os.path.join(TEMP_DIR, sid)
     if not os.path.isdir(session_dir):
         return jsonify({'error': 'Sessão expirada.'}), 400
-    src = next((os.path.join(session_dir, fn)
-                for fn in os.listdir(session_dir)
-                if fn.startswith('expert_source')), None)
+    src = _find_expert_source(session_dir, source_type)
     if not src:
         return jsonify({'error': 'Arquivo não encontrado.'}), 400
     try:
-        ext = os.path.splitext(src)[1].lower()
-        if ext == '.csv':
-            df = None
-            for enc in ['utf-8-sig', 'latin-1', 'utf-8']:
-                try:
-                    df = pd.read_csv(src, dtype=str, sep=None, engine='python',
-                                     encoding=enc, nrows=0, na_filter=False)
-                    break
-                except Exception:
-                    continue
-        else:
-            df = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
-                               keep_default_na=False, nrows=0)
-        if df is None:
-            return jsonify({'error': 'Não foi possível ler o arquivo.'}), 500
+        df = _read_expert_header(src, sheet_name)
         cols = [str(c).strip() for c in df.columns]
         return jsonify({'headers': cols, 'auto_map': _auto_map_expert(cols)})
     except Exception as e:
@@ -1712,17 +1817,89 @@ def api_get_columns_expert():
 def api_process_expert():
     data        = request.json
     sid         = data.get('session_id')
-    sheet_name  = data.get('sheet_name', 'Planilha1')
+    active_sheet_name   = data.get('active_sheet_name') or data.get('sheet_name', 'Planilha1')
+    inactive_sheet_name = data.get('inactive_sheet_name') or data.get('sheet_name', 'Planilha1')
     col_map_usr = data.get('col_map', {})
+    inactive_start_date = data.get('inactive_start_date') or ''
+    inactive_end_date   = data.get('inactive_end_date') or ''
     session_dir = os.path.join(TEMP_DIR, sid)
     if not os.path.isdir(session_dir):
         return jsonify({'error': 'Sessão expirada.'}), 400
-    src = next((os.path.join(session_dir, fn)
-                for fn in os.listdir(session_dir)
-                if fn.startswith('expert_source')), None)
-    if not src:
-        return jsonify({'error': 'Arquivo não encontrado.'}), 400
+    active_src = _find_expert_source(session_dir, 'ativos')
+    inactive_src = _find_expert_source(session_dir, 'desligados')
+    if not active_src:
+        return jsonify({'error': 'Envie a base de ativos do Expert antes de processar.'}), 400
+    if not inactive_src:
+        return jsonify({'error': 'Envie a base de desligados do Expert antes de processar.'}), 400
     try:
+        active_df, active_map = _read_expert_dataframe(active_src, active_sheet_name, col_map_usr)
+        inactive_df, inactive_map = _read_expert_dataframe(inactive_src, inactive_sheet_name, col_map_usr)
+        ativos_rows, inativos_rows, excluidos_rows = [], [], []
+
+        if inactive_start_date or inactive_end_date:
+            deslig_col = inactive_map.get('dt_desligamento', '')
+            if not deslig_col or deslig_col not in inactive_df.columns:
+                return jsonify({
+                    'error': 'Para filtrar desligados por período, mapeie a coluna "Data de desligamento/demissão".'
+                }), 400
+            start_dt = _parse_expert_filter_date(inactive_start_date, 'Data inicial dos desligados')
+            end_dt = _parse_expert_filter_date(inactive_end_date, 'Data final dos desligados')
+            if start_dt is not None and end_dt is not None and start_dt > end_dt:
+                return jsonify({'error': 'A data inicial dos desligados não pode ser maior que a data final.'}), 400
+
+            deslig_dates = pd.to_datetime(inactive_df[deslig_col], errors='coerce').dt.normalize()
+            mask = deslig_dates.notna()
+            if start_dt is not None:
+                mask &= deslig_dates >= start_dt
+            if end_dt is not None:
+                mask &= deslig_dates <= end_dt
+            inactive_df = inactive_df[mask].reset_index(drop=True)
+
+        # A base de ativos nao separa mais inativos por Desc. Situacao:
+        # todas as situacoes aprovadas pelo cliente seguem como ativas, exceto
+        # perfis removidos por regra de elegibilidade.
+        for row in active_df.to_dict('records'):
+            motivo = _expert_exclusion_reason(row, active_map)
+            if motivo:
+                row['_motivo'] = motivo
+                excluidos_rows.append(row)
+            else:
+                ativos_rows.append(_to_expert_row(row, active_map))
+
+        # A base de desligados e a fonte de verdade dos inativos/desativados.
+        inativos_rows = [
+            _to_expert_inativo_row(r, inactive_map, 'Base de desligados')
+            for r in inactive_df.to_dict('records')
+        ]
+
+        write_fast_excel(ativos_rows,   os.path.join(session_dir, 'expert_ativos.xlsx'),   'Ativos',   EXPERT_COLS)
+        write_fast_excel(inativos_rows, os.path.join(session_dir, 'expert_inativos.xlsx'), 'Inativos', EXPERT_INATIVOS_COLS)
+        _write_expert_csv(ativos_rows,    os.path.join(session_dir, 'expert_ativos.csv'))
+        _write_expert_csv(inativos_rows,  os.path.join(session_dir, 'expert_inativos.csv'), EXPERT_INATIVOS_COLS)
+
+        ppt_ok = _generate_expert_ppt(
+            ativos_rows,
+            inativos_rows,
+            excluidos_rows,
+            os.path.join(session_dir, 'expert_ppt.pptx')
+        )
+
+        def count_reasons(rows):
+            c = {}
+            for r in rows:
+                m = r.get('_motivo', 'Outro')
+                c[m] = c.get(m, 0) + 1
+            return c
+
+        return jsonify({
+            'total': len(active_df) + len(inactive_df),
+            'ativos': len(ativos_rows),
+            'inativos': len(inativos_rows),
+            'excluidos': len(excluidos_rows),
+            'reasons': count_reasons(excluidos_rows),
+            'ppt_available': ppt_ok,
+        })
+
         ext = os.path.splitext(src)[1].lower()
 
         # 1. Lê só os cabeçalhos para montar o mapeamento
