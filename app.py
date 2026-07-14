@@ -340,6 +340,21 @@ def _load_and_rename(xl, sheet_map, per_sheet_map):
             elif sheet_auto.get(key) and sheet_auto[key] in sheet_cols:
                 rename[sheet_auto[key]] = f'_f_{key}'
 
+        if norm_ascii(grupo) == 'stefanini':
+            stefanini_matricula_col = next(
+                (
+                    col for col in sheet_cols
+                    if norm_ascii(col) in {'c. custo', 'c.custo', 'c custo'}
+                ),
+                None
+            )
+            if stefanini_matricula_col:
+                rename = {
+                    col: target for col, target in rename.items()
+                    if target != '_f_matricula'
+                }
+                rename[stefanini_matricula_col] = '_f_matricula'
+
         df = df.rename(columns=rename)
         df['_grupo'] = grupo
         frames.append(df)
