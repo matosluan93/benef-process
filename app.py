@@ -467,9 +467,20 @@ def check_nv(row, col_map, vinculo):
         return 'Pessoa Jurídica (PJ)'
     return None
 
-WELLHUB_COLS = ['Name', 'Email', 'National ID', 'Employee ID',
-                'Department', 'Cost Center', 'Office Zip Code',
-                'Payroll ID', 'Payroll Enabled']
+WELLHUB_COLS = [
+    'CNPJ',
+    'Nome da Empresa',
+    'Nome do profissional',
+    'Data de Admissão',
+    'Email do profissional',
+    'CPF',
+    'Matrícula',
+    'Department',
+    'Cost Center',
+    'Office Zip',
+    'Code Payroll',
+    'Payroll Enabled',
+]
 
 WELLHUB_EMPRESAS_KW = [
     ('gauge',), ('woopi',), ('stefanini', 'data', 'analytics'),
@@ -522,16 +533,21 @@ def to_final_row(row_dict, col_map):
 
 def to_wellhub_row(row_dict, col_map):
     get = lambda k: clean_val(row_dict.get(col_map.get(k, '___absent___'), ''))
+    adm_col = col_map.get('data_admissao', '')
+    adm_val = row_dict.get(adm_col, '') if adm_col else ''
     return {
-        'Name':            get('nome'),
-        'Email':           get('email'),
-        'National ID':     format_cpf(row_dict.get(col_map.get('cpf', '___absent___'), '')),
-        'Employee ID':     get('matricula'),
-        'Department':      '',
-        'Cost Center':     '',
-        'Office Zip Code': '',
-        'Payroll ID':      '',
-        'Payroll Enabled': 'YES',
+        'CNPJ':                  get('cnpj'),
+        'Nome da Empresa':       get('empresa'),
+        'Nome do profissional':  get('nome'),
+        'Data de Admissão':      format_date_val(adm_val),
+        'Email do profissional': get('email'),
+        'CPF':                   format_cpf(row_dict.get(col_map.get('cpf', '___absent___'), '')),
+        'Matrícula':             get('matricula'),
+        'Department':            '',
+        'Cost Center':           '',
+        'Office Zip':            '',
+        'Code Payroll':          '',
+        'Payroll Enabled':       'YES',
     }
 
 
@@ -625,7 +641,7 @@ def write_newvalue_csv(nv_rows, filepath):
                 'Número de CPF':  row.get('CPF do profissional', ''),
             })
 
-def write_wellhub_csv(wh_rows, filepath):
+def _write_wellhub_csv_legacy(wh_rows, filepath):
     """
     Layout Wellhub — 10 colunas com nomes exatos do sistema Wellhub.
     """
@@ -657,6 +673,42 @@ def write_wellhub_csv(wh_rows, filepath):
                 'Payroll ID':                                                row.get('Payroll ID', ''),
                 'Payroll Enabled (folha de pagamento habilitada?) obrigatório': row.get('Payroll Enabled', 'YES'),
                 'Employee Segment':                                          '',
+            })
+
+def write_wellhub_csv(wh_rows, filepath):
+    """Layout WellHub consolidado para envio ao cliente."""
+    import csv
+    cols = [
+        'CNPJ',
+        'Nome da Empresa',
+        'Nome do profissional',
+        'Data de Admissão',
+        'Email do profissional',
+        'CPF',
+        'Matrícula',
+        'Department',
+        'Cost Center',
+        'Office Zip',
+        'Code Payroll',
+        'Payroll Enabled',
+    ]
+    with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.DictWriter(f, fieldnames=cols, delimiter=';')
+        writer.writeheader()
+        for row in wh_rows:
+            writer.writerow({
+                'CNPJ': row.get('CNPJ', ''),
+                'Nome da Empresa': row.get('Nome da Empresa', ''),
+                'Nome do profissional': row.get('Nome do profissional', ''),
+                'Data de Admissão': row.get('Data de Admissão', ''),
+                'Email do profissional': row.get('Email do profissional', ''),
+                'CPF': row.get('CPF', ''),
+                'Matrícula': row.get('Matrícula', ''),
+                'Department': row.get('Department', ''),
+                'Cost Center': row.get('Cost Center', ''),
+                'Office Zip': row.get('Office Zip', ''),
+                'Code Payroll': row.get('Code Payroll', ''),
+                'Payroll Enabled': row.get('Payroll Enabled', 'YES'),
             })
 
 @app.route('/')
@@ -810,14 +862,20 @@ def api_process():
 
         with open(os.path.join(session_dir, 'wh_meta.json'), 'w', encoding='utf-8') as jf:
             json.dump(wh_file_meta, jf, ensure_ascii=False)
-        # Gera CSVs do Wellhub (um por empresa) e ZIP
+
+        wh_csv_rows = []
+        for meta in wh_file_meta:
+            wh_csv_rows.extend(meta.get('_rows_raw', []))
+        write_wellhub_csv(wh_csv_rows, os.path.join(session_dir, 'wellhub_geral.csv'))
+
+        # Mantem um ZIP legado com o CSV geral para compatibilidade interna.
         import csv as _csv, zipfile as _zf
         _WCOLS = ['Name (nome) obrigatório','Email obrigatório',
                   'National ID (cpf) obrigatório','Employee ID (matrícula) obrigatório',
                   'Department','Cost Center','Office Zip Code','Payroll ID',
                   'Payroll Enabled (folha de pagamento habilitada?) obrigatório','Employee Segment']
-        _wh_csvs = []
-        for meta in wh_file_meta:
+        _wh_csvs = [(os.path.join(session_dir, 'wellhub_geral.csv'), 'Wellhub_Geral.csv')]
+        for meta in []:
             _safe     = re.sub(r'[^\w]', '_', meta['empresa']).upper().strip('_')
             _csv_path = os.path.join(session_dir, f"wh_{re.sub(r'[^\w]','',meta['cnpj'])}.csv")
             _csv_name = f"{_safe}_Wellhub.csv"
@@ -981,9 +1039,9 @@ def download_newvalue_csv(session_id):
 
 @app.route('/api/download/<session_id>/wellhub_csv_zip')
 def download_wellhub_csv_zip(session_id):
-    path = os.path.join(TEMP_DIR, session_id, 'wellhub_csv_todos.zip')
+    path = os.path.join(TEMP_DIR, session_id, 'wellhub_geral.csv')
     if not os.path.exists(path): return 'Arquivo não encontrado.', 404
-    return send_file(path, as_attachment=True, download_name='Wellhub_CSVs_Todos.zip')
+    return send_file(path, as_attachment=True, download_name='Wellhub_Geral.csv')
 
 @app.route('/api/wellhub-csv-zip-filtered/<session_id>', methods=['POST'])
 def wellhub_csv_zip_filtered(session_id):

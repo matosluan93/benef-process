@@ -897,7 +897,7 @@
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
         <button class="btn btn-primary btn-sm" onclick="dl('totalpass_csv')">TotalPass - CSV</button>
-        <button class="btn btn-sm" style="background:#E91E8C;color:#fff" onclick="dl('wellhub_csv_zip')">Wellhub - ZIP CSV</button>
+        <button class="btn btn-sm" style="background:#E91E8C;color:#fff" onclick="dl('wellhub_csv_zip')">Wellhub - CSV Geral</button>
         <button class="btn btn-sm" style="background:#F59E0B;color:#fff" onclick="dl('newvalue_csv')">New Value - CSV</button>
         <button class="btn btn-sm" style="background:#1D4E89;color:#fff" onclick="dl('auditppt')">Apresentacao PPT</button>
       </div>
@@ -1446,7 +1446,7 @@ function renderResults(data) {
   grid.appendChild(mkCard('Wellhub', '#E91E8C', wh.eligible, wh.excluded,
     wh.reasons, compHTML,
     `Baixar ZIP Excel (${companies.length} arquivo${companies.length!==1?'s':''})`, 'wellhub',
-    `Baixar ZIP CSV (${companies.length} arquivo${companies.length!==1?'s':''})`, 'wellhub_csv_zip'));
+    'Baixar CSV Geral', 'wellhub_csv_zip'));
 
   // New Value
   grid.appendChild(mkCard('New Value', '#F59E0B', data.nv.eligible, data.nv.excluded,
