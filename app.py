@@ -264,6 +264,10 @@ def get_email_domain(v):
 def is_allowed_email_domain(v):
     return get_email_domain(v) in ALLOWED_EMAIL_DOMAINS
 
+def is_ihm_group_email_domain_allowed(domain):
+    domain = norm_ascii(domain)
+    return 'ihm' in domain or 'stefanini' in domain
+
 def is_future_date(v):
     if v is None or (hasattr(v, '__class__') and v.__class__.__name__ == 'NaTType'):
         return False
@@ -435,9 +439,9 @@ def apply_rules(df, col_map, process_name, check_fn):
         domain_allowed = email_domain in ALLOWED_EMAIL_DOMAINS
 
         # Regras de domínio de e-mail por grupo
-        if row_dict.get('_grupo') == 'IHM' and email_domain and not domain_allowed:
-            if 'ihm' not in email_domain:
-                excluded_rows.append({**row_dict, '_motivo': 'E-mail sem domínio IHM', '_processo': process_name})
+        if row_dict.get('_grupo') == 'IHM' and email_domain:
+            if not is_ihm_group_email_domain_allowed(email_domain):
+                excluded_rows.append({**row_dict, '_motivo': 'E-mail sem domínio IHM/Stefanini', '_processo': process_name})
                 continue
 
         TOPAZ_KW = ['topaz', 'tpz', 'grupotopaz', 'grupo-topaz', 'newm', 'top-systems', 'topsystems']
