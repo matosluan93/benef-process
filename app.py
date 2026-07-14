@@ -86,6 +86,66 @@ EMAIL_RE  = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
 ISO_DATE  = re.compile(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}')   # YYYY-MM-DD ou YYYY/MM/DD
 CPF_CLEAN = re.compile(r'\D')
 
+ALLOWED_EMAIL_DOMAINS = {
+    'ar.stefanini.com',
+    'bankinginabox.site',
+    'caps.haus',
+    'cl.stefanini.com',
+    'co.stefanini.com',
+    'datastorm.com.br',
+    'ecglobal.com',
+    'ecglobal.haus',
+    'ecossistema.haus',
+    'gauge.com.br',
+    'gauge.haus',
+    'huia.haus',
+    'ihm.com.br',
+    'ihmsenior.com.br',
+    'inspiring.haus',
+    'latam.stefanini.com',
+    'marcostefanini.com',
+    'marcostefanini.com.br',
+    'mx.stefanini.com',
+    'necxt.com.br',
+    'necxtorbitall.com.br',
+    'openstartups.com.br',
+    'orbitall.com.br',
+    'orbitallpay.com.br',
+    'originacao.com',
+    'originacao.com.br',
+    'pe.stefanini.com',
+    'perep.eu',
+    'perepanalytics.eu',
+    'pontocertificado.com',
+    'pontocertificado.com.br',
+    'potenciaisstefanini.com.br',
+    'reseller.stefanini.com',
+    'sbc091.teamsonevoice.com',
+    'scalait.com',
+    'seniorengenharia.com.br',
+    'singulahr.com.br',
+    'sophie.chat',
+    'stefanini.com',
+    'stefanini.com.br',
+    'stefanini.org.br',
+    'stefaniniathome.com.br',
+    'stefaninicyber.com',
+    'stefaninilatam.mail.onmicrosoft.com',
+    'stefaninilatam.onmicrosoft.com',
+    'stefaninirafael.com',
+    'stefaninirafael.com.br',
+    'stefaniniservico.com.br',
+    'stefaninitrends.com',
+    'stefaninitrends.com.br',
+    'stfeacesso.com.br',
+    'sunrising.com.br',
+    'sv.stefanini.com',
+    'techteam.biz',
+    'techteam.com',
+    'useniu.com.br',
+    'w3.haus',
+}
+
 # ─── Funções de normalização ──────────────────────────────────────────────────
 
 def norm(v):
@@ -194,6 +254,15 @@ DESCONTO_POS = {'sim', 's', 'yes', 'y', 'ativo', 'habilitado', 'enabled', 'true'
 
 def is_valid_email(v):
     return bool(EMAIL_RE.match(norm(v)))
+
+def get_email_domain(v):
+    email = norm_ascii(v)
+    if '@' not in email:
+        return ''
+    return email.rsplit('@', 1)[-1].strip()
+
+def is_allowed_email_domain(v):
+    return get_email_domain(v) in ALLOWED_EMAIL_DOMAINS
 
 def is_future_date(v):
     if v is None or (hasattr(v, '__class__') and v.__class__.__name__ == 'NaTType'):
@@ -347,21 +416,24 @@ def apply_rules(df, col_map, process_name, check_fn):
             excluded_rows.append({**row_dict, '_motivo': reason, '_processo': process_name})
             continue
 
+        email_domain = get_email_domain(email)
+        domain_allowed = email_domain in ALLOWED_EMAIL_DOMAINS
+
         # Regras de domínio de e-mail por grupo
-        if row_dict.get('_grupo') == 'IHM' and '@' in email:
-            if 'ihm' not in email.split('@')[-1]:
+        if row_dict.get('_grupo') == 'IHM' and email_domain and not domain_allowed:
+            if 'ihm' not in email_domain:
                 excluded_rows.append({**row_dict, '_motivo': 'E-mail sem domínio IHM', '_processo': process_name})
                 continue
 
         TOPAZ_KW = ['topaz', 'tpz', 'grupotopaz', 'grupo-topaz', 'newm', 'top-systems', 'topsystems']
-        if row_dict.get('_grupo') == 'Topaz' and '@' in email:
-            if not any(kw in email.split('@')[-1] for kw in TOPAZ_KW):
+        if row_dict.get('_grupo') == 'Topaz' and email_domain and not domain_allowed:
+            if not any(kw in email_domain for kw in TOPAZ_KW):
                 excluded_rows.append({**row_dict, '_motivo': 'E-mail sem domínio Topaz', '_processo': process_name})
                 continue
 
         STEFANINI_KW = ['stefanini']
-        if row_dict.get('_grupo') == 'Stefanini' and '@' in email:
-            if not any(kw in email.split('@')[-1] for kw in STEFANINI_KW):
+        if row_dict.get('_grupo') == 'Stefanini' and email_domain and not domain_allowed:
+            if not any(kw in email_domain for kw in STEFANINI_KW):
                 excluded_rows.append({**row_dict, '_motivo': 'E-mail sem domínio Stefanini', '_processo': process_name})
                 continue
 
