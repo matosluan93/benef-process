@@ -360,6 +360,16 @@ def _previous_source_path(session_dir):
             return path
     return ''
 
+def _previous_client_meta_path(session_dir):
+    return os.path.join(session_dir, 'previous_client.txt')
+
+def _read_previous_client_choice(session_dir):
+    path = _previous_client_meta_path(session_dir)
+    if not os.path.exists(path):
+        return ''
+    choice = norm_ascii(open(path, encoding='utf-8').read().strip())
+    return choice if choice in {'totalpass', 'wellhub'} else ''
+
 def _previous_client_layout_to_internal(df):
     df = df.copy()
     df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
@@ -867,6 +877,9 @@ def api_upload():
 @app.route('/api/upload-previous', methods=['POST'])
 def api_upload_previous():
     sid = request.form.get('session_id')
+    previous_client = norm_ascii(request.form.get('previous_client', 'totalpass'))
+    if previous_client not in {'totalpass', 'wellhub'}:
+        previous_client = 'totalpass'
     if not sid:
         return jsonify({'error': 'Envie a base atual antes da base passada.'}), 400
     if 'file' not in request.files:
@@ -886,6 +899,8 @@ def api_upload_previous():
             os.remove(old_path)
     upload_path = os.path.join(session_dir, f'previous_source{ext}')
     f.save(upload_path)
+    with open(_previous_client_meta_path(session_dir), 'w', encoding='utf-8') as meta_f:
+        meta_f.write(previous_client)
 
     try:
         if upload_path.lower().endswith('.csv'):
@@ -939,6 +954,7 @@ def api_process():
     sid           = data.get('session_id')
     sheet_map     = data.get('sheet_map', {})
     previous_sheet_map = data.get('previous_sheet_map', {})
+    requested_previous_client = norm_ascii(data.get('previous_client', ''))
     per_sheet_map = data.get('per_sheet_col_map', {})
     upload_path   = os.path.join(TEMP_DIR, sid, 'source.xlsx')
     if not os.path.exists(upload_path):
@@ -956,7 +972,9 @@ def api_process():
 
         previous_path = _previous_source_path(os.path.join(TEMP_DIR, sid))
         previous_used = False
-        previous_process = ''
+        previous_process = requested_previous_client
+        if previous_process not in {'totalpass', 'wellhub'}:
+            previous_process = _read_previous_client_choice(os.path.join(TEMP_DIR, sid))
         if previous_path and os.path.exists(previous_path):
             if previous_path.lower().endswith('.csv'):
                 previous_consolidated = _previous_client_layout_to_internal(
@@ -976,7 +994,13 @@ def api_process():
                     )
             previous_consolidated, _ = _apply_date_conversion(previous_consolidated, internal_map)
             if '_previous_client_process' in previous_consolidated.columns:
-                previous_process = clean_val(previous_consolidated['_previous_client_process'].iloc[0])
+                detected_previous_process = clean_val(previous_consolidated['_previous_client_process'].iloc[0])
+                if previous_process not in {'totalpass', 'wellhub'}:
+                    previous_process = detected_previous_process
+            if previous_process == 'totalpass':
+                previous_consolidated['_f_tipo_vinculo'] = 'CLT'
+            elif previous_process == 'wellhub':
+                previous_consolidated['_f_tipo_vinculo'] = 'Pessoa Jurídica (PJ)'
             if previous_process == 'totalpass':
                 totalpass_consolidated = merge_current_previous_for_benefits(consolidated, previous_consolidated)
             elif previous_process == 'wellhub':
