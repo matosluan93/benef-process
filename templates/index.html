@@ -760,12 +760,24 @@
       </div>
     </div>
 
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px">
     <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
       <div class="icon">📊</div>
       <div class="label" id="dropLabel">Clique ou arraste a planilha aqui</div>
       <div class="sub">Formatos aceitos: .xlsx · .xls</div>
     </div>
+      <div class="dropzone" id="previousDropzone" onclick="document.getElementById('previousFileInput').click()">
+        <div class="icon">📁</div>
+        <div class="label" id="previousDropLabel">Base passada</div>
+        <div class="sub">Opcional: cruza TotalPass e WellHub</div>
+      </div>
+    </div>
     <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none" />
+    <input type="file" id="previousFileInput" accept=".xlsx,.xls" style="display:none" />
+
+    <div class="flex-end hidden" id="uploadContinueBox" style="margin-top:18px">
+      <button class="btn btn-primary" onclick="continueAfterUpload()">Continuar para mapeamento →</button>
+    </div>
 
     <div class="alert-tip">
       💡 <strong>Dica:</strong> Certifique-se de que as abas estejam nomeadas como
@@ -1054,6 +1066,9 @@ const S = {
   filename: '',
   sheetNames: [],
   sheetMap: { Stefanini: '', Topaz: '', IHM: '' },
+  previousFilename: '',
+  previousSheetNames: [],
+  previousSheetMap: {},
   sheetData: {},          // per-sheet: { headers, auto_map, row_count }
   perSheetColMap: {},     // per-sheet column mapping
   activeSheetTab: '',
@@ -1076,6 +1091,7 @@ const COL_FIELDS = [
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.getElementById('headerDate').textContent = new Date().toLocaleDateString('pt-BR');
+document.getElementById('dropLabel').textContent = 'Base atual';
 
 // ─── Navigation ──────────────────────────────────────────────────────────────
 function goStep(n) {
@@ -1123,6 +1139,17 @@ document.getElementById('fileInput').addEventListener('change', e => {
   if (e.target.files[0]) uploadFile(e.target.files[0]);
 });
 
+const previousDz = document.getElementById('previousDropzone');
+previousDz.addEventListener('dragover',  e => { e.preventDefault(); previousDz.classList.add('drag'); });
+previousDz.addEventListener('dragleave', () => previousDz.classList.remove('drag'));
+previousDz.addEventListener('drop', e => {
+  e.preventDefault(); previousDz.classList.remove('drag');
+  if (e.dataTransfer.files[0]) uploadPreviousFile(e.dataTransfer.files[0]);
+});
+document.getElementById('previousFileInput').addEventListener('change', e => {
+  if (e.target.files[0]) uploadPreviousFile(e.target.files[0]);
+});
+
 async function uploadFile(file) {
   if (!file.name.match(/\.(xlsx|xls)$/i)) {
     showAlert('Formato inválido. Envie um arquivo .xlsx ou .xls.');
@@ -1141,14 +1168,50 @@ async function uploadFile(file) {
     S.filename    = data.filename;
     S.sheetNames  = data.sheet_names;
     S.sheetMap    = { ...data.auto_sheet_map };
+    document.getElementById('dropLabel').textContent = 'Base atual: ' + data.filename;
+    document.getElementById('uploadContinueBox').classList.remove('hidden');
 
     renderSheetSelects();
     hideLoading();
-    goStep(2);
   } catch (e) { hideLoading(); showAlert('Erro de conexão: ' + e.message); }
 }
 
 // ─── Step 2: Sheet mapping ────────────────────────────────────────────────────
+async function uploadPreviousFile(file) {
+  if (!S.sessionId) {
+    showAlert('Envie primeiro a base atual. Depois anexe a base passada.');
+    return;
+  }
+  if (!file.name.match(/\.(xlsx|xls)$/i)) {
+    showAlert('Formato inválido. Envie um arquivo .xlsx ou .xls.');
+    return;
+  }
+  showLoading('Lendo base passada...');
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('session_id', S.sessionId);
+
+  try {
+    const res  = await fetch('/api/upload-previous', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.error) { hideLoading(); showAlert(data.error); return; }
+
+    S.previousFilename   = data.filename;
+    S.previousSheetNames = data.sheet_names;
+    S.previousSheetMap   = { ...data.auto_sheet_map };
+    document.getElementById('previousDropLabel').textContent = 'Base passada: ' + data.filename;
+    hideLoading();
+  } catch (e) { hideLoading(); showAlert('Erro de conexão: ' + e.message); }
+}
+
+function continueAfterUpload() {
+  if (!S.sessionId) {
+    showAlert('Envie a base atual para continuar.');
+    return;
+  }
+  goStep(2);
+}
+
 function renderSheetSelects() {
   document.getElementById('step2Sub').innerHTML =
     `<strong>${S.filename}</strong> · ${S.sheetNames.length} aba(s) encontrada(s). Confirme ou ajuste o mapeamento abaixo.`;
@@ -1330,6 +1393,7 @@ async function renderPreview() {
       body: JSON.stringify({
         session_id:        S.sessionId,
         sheet_map:         S.sheetMap,
+        previous_sheet_map: S.previousSheetMap,
         per_sheet_col_map: S.perSheetColMap,
         col_map:           {},
       }),
@@ -1378,6 +1442,7 @@ async function runProcess() {
       body: JSON.stringify({
         session_id:        S.sessionId,
         sheet_map:         S.sheetMap,
+        previous_sheet_map: S.previousSheetMap,
         per_sheet_col_map: S.perSheetColMap,
         col_map:           {},
       }),
@@ -1820,10 +1885,14 @@ function dlExpert(type) {
 function resetApp() {
   S.sessionId = null; S.filename = ''; S.sheetNames = [];
   S.sheetMap  = { Stefanini: '', Topaz: '', IHM: '' };
+  S.previousFilename = ''; S.previousSheetNames = []; S.previousSheetMap = {};
   S.sheetData = {}; S.perSheetColMap = {}; S.activeSheetTab = '';
   S.previewRows = []; S.results = null;
   document.getElementById('fileInput').value = '';
-  document.getElementById('dropLabel').textContent = 'Clique ou arraste a planilha aqui';
+  document.getElementById('previousFileInput').value = '';
+  document.getElementById('dropLabel').textContent = 'Base atual';
+  document.getElementById('previousDropLabel').textContent = 'Base passada';
+  document.getElementById('uploadContinueBox').classList.add('hidden');
   goStep(1);
 }
 </script>

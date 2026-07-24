@@ -309,6 +309,15 @@ def auto_map_cols(headers):
 
 # ─── Carregamento centralizado ────────────────────────────────────────────────
 
+def auto_map_sheets(xl):
+    auto_map = {}
+    for grupo in ['Stefanini', 'Topaz', 'IHM']:
+        for s in xl.sheet_names:
+            if grupo.lower() in s.lower() or s.lower() in grupo.lower():
+                auto_map[grupo] = s
+                break
+    return auto_map
+
 def _load_and_rename(xl, sheet_map, per_sheet_map):
     """
     Fonte única de verdade para leitura, limpeza e renomeação de colunas.
@@ -384,6 +393,38 @@ def _load_and_rename(xl, sheet_map, per_sheet_map):
         consolidated = consolidated.reset_index(drop=True)
     return consolidated
 
+
+def merge_current_previous_for_benefits(current_df, previous_df):
+    """Une base atual + passada para TotalPass/WellHub, priorizando a atual."""
+    if previous_df is None or previous_df.empty:
+        return current_df.copy()
+    if current_df is None or current_df.empty:
+        return previous_df.copy()
+
+    current = current_df.copy()
+    previous = previous_df.copy()
+    current['_base_priority'] = 0
+    previous['_base_priority'] = 1
+    current['_base_original_order'] = range(len(current))
+    previous['_base_original_order'] = range(len(previous))
+
+    combined = pd.concat([current, previous], ignore_index=True, sort=False)
+    if '_f_cpf' in combined.columns:
+        combined['_merge_key'] = combined['_f_cpf'].apply(
+            lambda v: CPF_CLEAN.sub('', str(v)) if clean_val(v) else ''
+        )
+    elif '_f_email' in combined.columns:
+        combined['_merge_key'] = combined['_f_email'].apply(lambda v: norm_ascii(v))
+    else:
+        return combined.drop(columns=['_base_priority', '_base_original_order'], errors='ignore')
+
+    keyed = combined[combined['_merge_key'].ne('')].copy()
+    unkeyed = combined[combined['_merge_key'].eq('')].copy()
+    keyed = keyed.sort_values(['_merge_key', '_base_priority', '_base_original_order'])
+    keyed = keyed.drop_duplicates('_merge_key', keep='first')
+    merged = pd.concat([keyed, unkeyed], ignore_index=True, sort=False)
+    merged = merged.sort_values(['_base_priority', '_base_original_order']).reset_index(drop=True)
+    return merged.drop(columns=['_merge_key', '_base_priority', '_base_original_order'], errors='ignore')
 
 def _apply_date_conversion(df, internal_map):
     """Converte a coluna de admissão para Timestamp de forma centralizada."""
@@ -735,12 +776,7 @@ def api_upload():
 
     try:
         xl       = pd.ExcelFile(upload_path)
-        auto_map = {}
-        for grupo in ['Stefanini', 'Topaz', 'IHM']:
-            for s in xl.sheet_names:
-                if grupo.lower() in s.lower() or s.lower() in grupo.lower():
-                    auto_map[grupo] = s
-                    break
+        auto_map = auto_map_sheets(xl)
         return jsonify({
             'session_id':     session_id,
             'sheet_names':    xl.sheet_names,
@@ -749,6 +785,34 @@ def api_upload():
         })
     except Exception as e:
         return jsonify({'error': f'Erro ao ler o arquivo: {str(e)}'}), 500
+
+@app.route('/api/upload-previous', methods=['POST'])
+def api_upload_previous():
+    sid = request.form.get('session_id')
+    if not sid:
+        return jsonify({'error': 'Envie a base atual antes da base passada.'}), 400
+    if 'file' not in request.files:
+        return jsonify({'error': 'Nenhum arquivo enviado.'}), 400
+    f = request.files['file']
+    if not f.filename.lower().endswith(('.xlsx', '.xls')):
+        return jsonify({'error': 'Formato inválido. Envie um arquivo .xlsx ou .xls.'}), 400
+
+    session_dir = os.path.join(TEMP_DIR, sid)
+    if not os.path.exists(os.path.join(session_dir, 'source.xlsx')):
+        return jsonify({'error': 'Sessão expirada. Envie a base atual novamente.'}), 400
+
+    upload_path = os.path.join(session_dir, 'previous_source.xlsx')
+    f.save(upload_path)
+
+    try:
+        xl = pd.ExcelFile(upload_path)
+        return jsonify({
+            'sheet_names': xl.sheet_names,
+            'auto_sheet_map': auto_map_sheets(xl),
+            'filename': f.filename,
+        })
+    except Exception as e:
+        return jsonify({'error': f'Erro ao ler a base passada: {str(e)}'}), 500
 
 @app.route('/api/get-columns', methods=['POST'])
 def api_get_columns():
@@ -782,6 +846,7 @@ def api_process():
     data          = request.json
     sid           = data.get('session_id')
     sheet_map     = data.get('sheet_map', {})
+    previous_sheet_map = data.get('previous_sheet_map', {})
     per_sheet_map = data.get('per_sheet_col_map', {})
     upload_path   = os.path.join(TEMP_DIR, sid, 'source.xlsx')
     if not os.path.exists(upload_path):
@@ -793,12 +858,26 @@ def api_process():
         internal_map = {key: f'_f_{key}' for key in COL_ALIASES.keys()}
 
         consolidated, _ = _apply_date_conversion(consolidated, internal_map)
+        benefit_consolidated = consolidated
+
+        previous_path = os.path.join(TEMP_DIR, sid, 'previous_source.xlsx')
+        previous_used = False
+        if os.path.exists(previous_path):
+            prev_xl = pd.ExcelFile(previous_path)
+            prev_sheet_map = previous_sheet_map or auto_map_sheets(prev_xl)
+            for grupo, sheet_name in sheet_map.items():
+                if grupo not in prev_sheet_map and sheet_name in prev_xl.sheet_names:
+                    prev_sheet_map[grupo] = sheet_name
+            previous_consolidated = _load_and_rename(prev_xl, prev_sheet_map, per_sheet_map)
+            previous_consolidated, _ = _apply_date_conversion(previous_consolidated, internal_map)
+            benefit_consolidated = merge_current_previous_for_benefits(consolidated, previous_consolidated)
+            previous_used = True
 
         today_str   = date.today().strftime('%d/%m/%Y')
         session_dir = os.path.join(TEMP_DIR, sid)
 
-        tp_elig, tp_excl = apply_rules(consolidated, internal_map, 'TotalPass', check_tp)
-        wh_elig, wh_excl = apply_rules(consolidated, internal_map, 'Wellhub',   check_wh)
+        tp_elig, tp_excl = apply_rules(benefit_consolidated, internal_map, 'TotalPass', check_tp)
+        wh_elig, wh_excl = apply_rules(benefit_consolidated, internal_map, 'Wellhub',   check_wh)
         nv_elig, nv_excl = apply_rules(consolidated, internal_map, 'New Value', check_nv)
 
         tp_rows = [to_final_row(r, internal_map) for r in tp_elig]
@@ -826,7 +905,7 @@ def api_process():
 
         # Salva total da base para o PPT de auditoria
         with open(os.path.join(session_dir, 'total_base.txt'), 'w') as _f:
-            _f.write(str(len(consolidated)))
+            _f.write(str(len(benefit_consolidated)))
 
         wh_by_cnpj = {}
         cnpj_col   = internal_map.get('cnpj', '')
@@ -914,7 +993,12 @@ def api_process():
             return counts
 
         return jsonify({
-            'total': len(consolidated),
+            'total': len(benefit_consolidated),
+            'previous_base': {
+                'used': previous_used,
+                'current_total': len(consolidated),
+                'combined_total': len(benefit_consolidated),
+            },
             'tp': {'eligible': len(tp_rows),  'excluded': len(tp_excl),  'reasons': count_reasons(tp_excl)},
             'wh': {
                 'eligible':  sum(m['count'] for m in wh_file_meta),
