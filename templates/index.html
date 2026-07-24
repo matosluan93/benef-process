@@ -773,7 +773,7 @@
       </div>
     </div>
     <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none" />
-    <input type="file" id="previousFileInput" accept=".xlsx,.xls" style="display:none" />
+    <input type="file" id="previousFileInput" accept=".xlsx,.xls,.csv" style="display:none" />
 
     <div class="flex-end hidden" id="uploadContinueBox" style="margin-top:18px">
       <button class="btn btn-primary" onclick="continueAfterUpload()">Continuar para mapeamento →</button>
@@ -1182,8 +1182,8 @@ async function uploadPreviousFile(file) {
     showAlert('Envie primeiro a base atual. Depois anexe a base passada.');
     return;
   }
-  if (!file.name.match(/\.(xlsx|xls)$/i)) {
-    showAlert('Formato inválido. Envie um arquivo .xlsx ou .xls.');
+  if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
+    showAlert('Formato inválido. Envie um arquivo .xlsx, .xls ou .csv.');
     return;
   }
   showLoading('Lendo base passada...');

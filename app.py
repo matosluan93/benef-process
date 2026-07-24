@@ -318,6 +318,60 @@ def auto_map_sheets(xl):
                 break
     return auto_map
 
+def _norm_header(v):
+    return norm_ascii(v).replace('_', ' ').replace('-', ' ').replace('.', ' ').strip()
+
+def _find_header(headers, aliases):
+    normalized = [(h, _norm_header(h)) for h in headers]
+    alias_norms = [_norm_header(a) for a in aliases]
+    for alias in alias_norms:
+        for h, n in normalized:
+            if n == alias:
+                return h
+    for alias in alias_norms:
+        if len(alias) >= 4:
+            for h, n in normalized:
+                if alias in n:
+                    return h
+    return ''
+
+def _read_previous_first_table(path):
+    if path.lower().endswith('.csv'):
+        return pd.read_csv(path, dtype=str, sep=None, engine='python', na_filter=False)
+    return pd.read_excel(path, dtype=str, na_filter=False)
+
+def _previous_source_path(session_dir):
+    for ext in ('.xlsx', '.xls', '.csv'):
+        path = os.path.join(session_dir, f'previous_source{ext}')
+        if os.path.exists(path):
+            return path
+    return ''
+
+def _previous_client_layout_to_internal(df):
+    df = df.copy()
+    df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+    mask = df.apply(lambda row: row.astype(str).str.strip().ne('').any(), axis=1)
+    df = df[mask].reset_index(drop=True)
+    headers = list(df.columns)
+    col_map = {
+        'empresa': _find_header(headers, ['nome da empresa', 'nome empresa', 'empresa']),
+        'cnpj': _find_header(headers, ['cnpj', 'cnpj empresa', 'cnpj da empresa', 'cnpj_empresa']),
+        'nome': _find_header(headers, ['nome do profissional', 'nome profissional', 'name nome', 'name', 'nome']),
+        'data_admissao': _find_header(headers, ['data de admissao', 'data de admissão', 'admissao', 'admissão']),
+        'email': _find_header(headers, ['email do profissional', 'email obrigatorio', 'email obrigatório', 'email colaborador', 'e mail colaborador', 'email', 'e mail']),
+        'cpf': _find_header(headers, ['cpf', 'cpf do profissional', 'national id', 'national id cpf', 'numero de cpf', 'número de cpf']),
+        'matricula': _find_header(headers, ['matricula', 'matrícula', 'employee id', 'employee id matricula', 'employee id matrícula']),
+        'payroll_enabled': _find_header(headers, ['payroll enabled', 'payroll enabled folha de pagamento habilitada obrigatorio', 'payroll enabled folha de pagamento habilitada obrigatório']),
+    }
+
+    rename = {}
+    for key, col in col_map.items():
+        if col:
+            rename[col] = f'_f_{key}'
+    df = df.rename(columns=rename)
+    df['_grupo'] = 'Stefanini'
+    return df
+
 def _load_and_rename(xl, sheet_map, per_sheet_map):
     """
     Fonte única de verdade para leitura, limpeza e renomeação de colunas.
@@ -409,14 +463,16 @@ def merge_current_previous_for_benefits(current_df, previous_df):
     previous['_base_original_order'] = range(len(previous))
 
     combined = pd.concat([current, previous], ignore_index=True, sort=False)
-    if '_f_cpf' in combined.columns:
-        combined['_merge_key'] = combined['_f_cpf'].apply(
-            lambda v: CPF_CLEAN.sub('', str(v)) if clean_val(v) else ''
-        )
-    elif '_f_email' in combined.columns:
-        combined['_merge_key'] = combined['_f_email'].apply(lambda v: norm_ascii(v))
-    else:
+    if '_f_cpf' not in combined.columns and '_f_email' not in combined.columns:
         return combined.drop(columns=['_base_priority', '_base_original_order'], errors='ignore')
+    combined['_merge_key'] = combined.apply(
+        lambda row: (
+            CPF_CLEAN.sub('', str(row.get('_f_cpf', '')))
+            if clean_val(row.get('_f_cpf', ''))
+            else norm_ascii(row.get('_f_email', ''))
+        ),
+        axis=1,
+    )
 
     keyed = combined[combined['_merge_key'].ne('')].copy()
     unkeyed = combined[combined['_merge_key'].eq('')].copy()
@@ -580,6 +636,7 @@ def to_wellhub_row(row_dict, col_map):
     get = lambda k: clean_val(row_dict.get(col_map.get(k, '___absent___'), ''))
     adm_col = col_map.get('data_admissao', '')
     adm_val = row_dict.get(adm_col, '') if adm_col else ''
+    payroll_val = get('payroll_enabled') or 'YES'
     return {
         'CNPJ':                  get('cnpj'),
         'Nome da Empresa':       get('empresa'),
@@ -592,7 +649,7 @@ def to_wellhub_row(row_dict, col_map):
         'Cost Center':           '',
         'Office Zip':            '',
         'Code Payroll':          '',
-        'Payroll Enabled':       'YES',
+        'Payroll Enabled':       payroll_val,
     }
 
 
@@ -794,17 +851,31 @@ def api_upload_previous():
     if 'file' not in request.files:
         return jsonify({'error': 'Nenhum arquivo enviado.'}), 400
     f = request.files['file']
-    if not f.filename.lower().endswith(('.xlsx', '.xls')):
-        return jsonify({'error': 'Formato inválido. Envie um arquivo .xlsx ou .xls.'}), 400
+    if not f.filename.lower().endswith(('.xlsx', '.xls', '.csv')):
+        return jsonify({'error': 'Formato inválido. Envie um arquivo .xlsx, .xls ou .csv.'}), 400
 
     session_dir = os.path.join(TEMP_DIR, sid)
     if not os.path.exists(os.path.join(session_dir, 'source.xlsx')):
         return jsonify({'error': 'Sessão expirada. Envie a base atual novamente.'}), 400
 
-    upload_path = os.path.join(session_dir, 'previous_source.xlsx')
+    ext = os.path.splitext(f.filename)[1].lower()
+    for old_ext in ('.xlsx', '.xls', '.csv'):
+        old_path = os.path.join(session_dir, f'previous_source{old_ext}')
+        if os.path.exists(old_path):
+            os.remove(old_path)
+    upload_path = os.path.join(session_dir, f'previous_source{ext}')
     f.save(upload_path)
 
     try:
+        if upload_path.lower().endswith('.csv'):
+            df = _read_previous_first_table(upload_path)
+            return jsonify({
+                'sheet_names': ['CSV'],
+                'auto_sheet_map': {},
+                'filename': f.filename,
+                'layout': 'client_csv',
+                'columns': list(df.columns),
+            })
         xl = pd.ExcelFile(upload_path)
         return jsonify({
             'sheet_names': xl.sheet_names,
@@ -856,19 +927,30 @@ def api_process():
         xl           = pd.ExcelFile(upload_path)
         consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
         internal_map = {key: f'_f_{key}' for key in COL_ALIASES.keys()}
+        internal_map['payroll_enabled'] = '_f_payroll_enabled'
 
         consolidated, _ = _apply_date_conversion(consolidated, internal_map)
         benefit_consolidated = consolidated
 
-        previous_path = os.path.join(TEMP_DIR, sid, 'previous_source.xlsx')
+        previous_path = _previous_source_path(os.path.join(TEMP_DIR, sid))
         previous_used = False
-        if os.path.exists(previous_path):
-            prev_xl = pd.ExcelFile(previous_path)
-            prev_sheet_map = previous_sheet_map or auto_map_sheets(prev_xl)
-            for grupo, sheet_name in sheet_map.items():
-                if grupo not in prev_sheet_map and sheet_name in prev_xl.sheet_names:
-                    prev_sheet_map[grupo] = sheet_name
-            previous_consolidated = _load_and_rename(prev_xl, prev_sheet_map, per_sheet_map)
+        if previous_path and os.path.exists(previous_path):
+            if previous_path.lower().endswith('.csv'):
+                previous_consolidated = _previous_client_layout_to_internal(
+                    _read_previous_first_table(previous_path)
+                )
+            else:
+                prev_xl = pd.ExcelFile(previous_path)
+                prev_sheet_map = previous_sheet_map or auto_map_sheets(prev_xl)
+                for grupo, sheet_name in sheet_map.items():
+                    if grupo not in prev_sheet_map and sheet_name in prev_xl.sheet_names:
+                        prev_sheet_map[grupo] = sheet_name
+                if prev_sheet_map:
+                    previous_consolidated = _load_and_rename(prev_xl, prev_sheet_map, per_sheet_map)
+                else:
+                    previous_consolidated = _previous_client_layout_to_internal(
+                        _read_previous_first_table(previous_path)
+                    )
             previous_consolidated, _ = _apply_date_conversion(previous_consolidated, internal_map)
             benefit_consolidated = merge_current_previous_for_benefits(consolidated, previous_consolidated)
             previous_used = True
