@@ -250,6 +250,7 @@ ESTAGIO_KW   = ['estagiário', 'estagiario', 'estágio', 'estagio', 'estag']
 APRENDIZ_KW  = ['aprendiz', 'menor aprendiz', 'jovem aprendiz']
 TERCEIRO_KW  = ['terceiro', 'terceirizado', 'prestador']
 PJ_KW        = ['pj', 'pessoa jurídica', 'pessoa juridica', 'p.j.', 'autonomo', 'autônomo']
+CLT_KW       = ['clt', 'contratado', 'celetista', 'efetivo']
 DESCONTO_POS = {'sim', 's', 'yes', 'y', 'ativo', 'habilitado', 'enabled', 'true', '1', 'ativado', 'ok'}
 
 def is_valid_email(v):
@@ -286,6 +287,18 @@ def detect_vinculo_label(v):
     if any(k in v for k in TERCEIRO_KW): return 'Terceiro/Terceirizado'
     if any(k in v for k in PJ_KW):       return 'Pessoa Jurídica (PJ)'
     return None
+
+def is_clt_vinculo(v):
+    v = norm_ascii(v)
+    if not v:
+        return False
+    if any(k in v for k in ESTAGIO_KW + APRENDIZ_KW + TERCEIRO_KW + PJ_KW):
+        return False
+    return any(k in v for k in CLT_KW)
+
+def is_pj_vinculo(v):
+    v = norm_ascii(v)
+    return bool(v) and any(k in v for k in PJ_KW)
 
 def auto_map_cols(headers):
     """
@@ -363,6 +376,10 @@ def _previous_client_layout_to_internal(df):
         'matricula': _find_header(headers, ['matricula', 'matrícula', 'employee id', 'employee id matricula', 'employee id matrícula']),
         'payroll_enabled': _find_header(headers, ['payroll enabled', 'payroll enabled folha de pagamento habilitada obrigatorio', 'payroll enabled folha de pagamento habilitada obrigatório']),
     }
+    is_wellhub_layout = bool(col_map['payroll_enabled'])
+    is_totalpass_layout = bool(
+        _find_header(headers, ['cnpj_empresa', 'email_colaborador', 'e mail colaborador'])
+    )
 
     rename = {}
     for key, col in col_map.items():
@@ -370,6 +387,14 @@ def _previous_client_layout_to_internal(df):
             rename[col] = f'_f_{key}'
     df = df.rename(columns=rename)
     df['_grupo'] = 'Stefanini'
+    if is_wellhub_layout:
+        df['_previous_client_process'] = 'wellhub'
+        if '_f_tipo_vinculo' not in df.columns:
+            df['_f_tipo_vinculo'] = 'Pessoa Jurídica (PJ)'
+    elif is_totalpass_layout:
+        df['_previous_client_process'] = 'totalpass'
+        if '_f_tipo_vinculo' not in df.columns:
+            df['_f_tipo_vinculo'] = 'CLT'
     return df
 
 def _load_and_rename(xl, sheet_map, per_sheet_map):
@@ -542,25 +567,21 @@ def apply_rules(df, col_map, process_name, check_fn):
     return eligible_rows, excluded_rows
 
 def check_tp(row, col_map, vinculo):
-    return detect_vinculo_label(vinculo) if vinculo else None
+    if is_clt_vinculo(vinculo):
+        return None
+    return detect_vinculo_label(vinculo) or 'Não CLT'
 
 def check_wh(row, col_map, vinculo):
-    """
-    FIX: vinculo era comparado em case original; keywords são lowercase.
-    norm() garante comparação case-insensitive independente da planilha.
-    """
-    vinculo_norm = norm(vinculo)
-    if vinculo_norm:
-        bad = ESTAGIO_KW + APRENDIZ_KW + TERCEIRO_KW + PJ_KW
-        if any(k in vinculo_norm for k in bad):
-            return detect_vinculo_label(vinculo) or 'Vínculo inelegível para Wellhub'
-    desconto_col = col_map.get('desconto_folha')
-    if desconto_col and desconto_col in row:
-        val = clean_val(row.get(desconto_col))
-        if val:
-            if norm(val) not in DESCONTO_POS:
-                return 'Sem desconto em folha habilitado'
-    return None
+    if is_pj_vinculo(vinculo):
+        return None
+    if not clean_val(vinculo):
+        return 'Vínculo não identificado para Wellhub'
+    label = detect_vinculo_label(vinculo)
+    if label:
+        return f'{label} não elegível para Wellhub'
+    if is_clt_vinculo(vinculo):
+        return 'CLT não elegível para Wellhub'
+    return 'Vínculo não PJ'
 
 def check_nv(row, col_map, vinculo):
     vinculo_norm = norm(vinculo)
@@ -930,10 +951,12 @@ def api_process():
         internal_map['payroll_enabled'] = '_f_payroll_enabled'
 
         consolidated, _ = _apply_date_conversion(consolidated, internal_map)
-        benefit_consolidated = consolidated
+        totalpass_consolidated = consolidated
+        wellhub_consolidated = consolidated
 
         previous_path = _previous_source_path(os.path.join(TEMP_DIR, sid))
         previous_used = False
+        previous_process = ''
         if previous_path and os.path.exists(previous_path):
             if previous_path.lower().endswith('.csv'):
                 previous_consolidated = _previous_client_layout_to_internal(
@@ -952,14 +975,22 @@ def api_process():
                         _read_previous_first_table(previous_path)
                     )
             previous_consolidated, _ = _apply_date_conversion(previous_consolidated, internal_map)
-            benefit_consolidated = merge_current_previous_for_benefits(consolidated, previous_consolidated)
+            if '_previous_client_process' in previous_consolidated.columns:
+                previous_process = clean_val(previous_consolidated['_previous_client_process'].iloc[0])
+            if previous_process == 'totalpass':
+                totalpass_consolidated = merge_current_previous_for_benefits(consolidated, previous_consolidated)
+            elif previous_process == 'wellhub':
+                wellhub_consolidated = merge_current_previous_for_benefits(consolidated, previous_consolidated)
+            else:
+                totalpass_consolidated = merge_current_previous_for_benefits(consolidated, previous_consolidated)
+                wellhub_consolidated = merge_current_previous_for_benefits(consolidated, previous_consolidated)
             previous_used = True
 
         today_str   = date.today().strftime('%d/%m/%Y')
         session_dir = os.path.join(TEMP_DIR, sid)
 
-        tp_elig, tp_excl = apply_rules(benefit_consolidated, internal_map, 'TotalPass', check_tp)
-        wh_elig, wh_excl = apply_rules(benefit_consolidated, internal_map, 'Wellhub',   check_wh)
+        tp_elig, tp_excl = apply_rules(totalpass_consolidated, internal_map, 'TotalPass', check_tp)
+        wh_elig, wh_excl = apply_rules(wellhub_consolidated, internal_map, 'Wellhub',   check_wh)
         nv_elig, nv_excl = apply_rules(consolidated, internal_map, 'New Value', check_nv)
 
         tp_rows = [to_final_row(r, internal_map) for r in tp_elig]
@@ -987,7 +1018,7 @@ def api_process():
 
         # Salva total da base para o PPT de auditoria
         with open(os.path.join(session_dir, 'total_base.txt'), 'w') as _f:
-            _f.write(str(len(benefit_consolidated)))
+            _f.write(str(max(len(totalpass_consolidated), len(wellhub_consolidated), len(consolidated))))
 
         wh_by_cnpj = {}
         cnpj_col   = internal_map.get('cnpj', '')
@@ -1075,11 +1106,13 @@ def api_process():
             return counts
 
         return jsonify({
-            'total': len(benefit_consolidated),
+            'total': max(len(totalpass_consolidated), len(wellhub_consolidated), len(consolidated)),
             'previous_base': {
                 'used': previous_used,
+                'process': previous_process,
                 'current_total': len(consolidated),
-                'combined_total': len(benefit_consolidated),
+                'totalpass_total': len(totalpass_consolidated),
+                'wellhub_total': len(wellhub_consolidated),
             },
             'tp': {'eligible': len(tp_rows),  'excluded': len(tp_excl),  'reasons': count_reasons(tp_excl)},
             'wh': {
