@@ -399,8 +399,6 @@ def _previous_client_layout_to_internal(df):
     df['_grupo'] = 'Stefanini'
     if is_wellhub_layout:
         df['_previous_client_process'] = 'wellhub'
-        if '_f_tipo_vinculo' not in df.columns:
-            df['_f_tipo_vinculo'] = 'Pessoa Jurídica (PJ)'
     elif is_totalpass_layout:
         df['_previous_client_process'] = 'totalpass'
         if '_f_tipo_vinculo' not in df.columns:
@@ -583,15 +581,8 @@ def check_tp(row, col_map, vinculo):
 
 def check_wh(row, col_map, vinculo):
     if is_pj_vinculo(vinculo):
-        return None
-    if not clean_val(vinculo):
-        return 'Vínculo não identificado para Wellhub'
-    label = detect_vinculo_label(vinculo)
-    if label:
-        return f'{label} não elegível para Wellhub'
-    if is_clt_vinculo(vinculo):
-        return 'CLT não elegível para Wellhub'
-    return 'Vínculo não PJ'
+        return 'Pessoa Jurídica (PJ)'
+    return None
 
 def check_nv(row, col_map, vinculo):
     vinculo_norm = norm(vinculo)
@@ -1000,7 +991,7 @@ def api_process():
             if previous_process == 'totalpass':
                 previous_consolidated['_f_tipo_vinculo'] = 'CLT'
             elif previous_process == 'wellhub':
-                previous_consolidated['_f_tipo_vinculo'] = 'Pessoa Jurídica (PJ)'
+                previous_consolidated['_f_tipo_vinculo'] = previous_consolidated.get('_f_tipo_vinculo', '')
             if previous_process == 'totalpass':
                 totalpass_consolidated = merge_current_previous_for_benefits(consolidated, previous_consolidated)
             elif previous_process == 'wellhub':
