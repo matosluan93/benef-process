@@ -575,9 +575,10 @@ def apply_rules(df, col_map, process_name, check_fn):
     return eligible_rows, excluded_rows
 
 def check_tp(row, col_map, vinculo):
-    if is_clt_vinculo(vinculo):
-        return None
-    return detect_vinculo_label(vinculo) or 'Não CLT'
+    label = detect_vinculo_label(vinculo)
+    if label in {'Aprendiz', 'Estagiário', 'Pessoa Jurídica (PJ)'}:
+        return label
+    return None
 
 def check_wh(row, col_map, vinculo):
     if is_pj_vinculo(vinculo):
