@@ -618,6 +618,31 @@ def is_wellhub_empresa(nome):
     n = norm(nome)
     return any(all(kw in n for kw in kws) for kws in WELLHUB_EMPRESAS_KW)
 
+def normalize_payroll_enabled(val):
+    v = norm_ascii(val)
+    if v in {'sim', 's', 'yes', 'y', 'ativo', 'habilitado', 'enabled', 'true', '1', 'ativado', 'ok'}:
+        return 'Yes'
+    if v in {'nao', 'n', 'no', 'false', '0', 'inativo', 'desabilitado', 'disabled'}:
+        return 'No'
+    return clean_val(val)
+
+def wellhub_payroll_enabled(row_dict, col_map):
+    payroll_col = col_map.get('payroll_enabled', '')
+    current_value = clean_val(row_dict.get(payroll_col, '')) if payroll_col else ''
+    if norm_ascii(row_dict.get('_previous_client_process', '')) == 'wellhub' and current_value:
+        return normalize_payroll_enabled(current_value)
+
+    vinculo_col = col_map.get('tipo_vinculo', '')
+    vinculo = row_dict.get(vinculo_col, '') if vinculo_col else ''
+    label = detect_vinculo_label(vinculo)
+    if is_clt_vinculo(vinculo):
+        return 'Yes'
+    if label in {'Aprendiz', 'Estagiário'}:
+        return 'No'
+    if current_value:
+        return normalize_payroll_enabled(current_value)
+    return 'No'
+
 # ─── Geração de Excel ─────────────────────────────────────────────────────────
 
 FINAL_COLS = [
@@ -659,7 +684,7 @@ def to_wellhub_row(row_dict, col_map):
     get = lambda k: clean_val(row_dict.get(col_map.get(k, '___absent___'), ''))
     adm_col = col_map.get('data_admissao', '')
     adm_val = row_dict.get(adm_col, '') if adm_col else ''
-    payroll_val = get('payroll_enabled') or 'YES'
+    payroll_val = wellhub_payroll_enabled(row_dict, col_map)
     return {
         'CNPJ':                  get('cnpj'),
         'Nome da Empresa':       get('empresa'),
@@ -796,7 +821,7 @@ def _write_wellhub_csv_legacy(wh_rows, filepath):
                 'Cost Center':                                               row.get('Cost Center', ''),
                 'Office Zip Code':                                           row.get('Office Zip Code', ''),
                 'Payroll ID':                                                row.get('Payroll ID', ''),
-                'Payroll Enabled (folha de pagamento habilitada?) obrigatório': row.get('Payroll Enabled', 'YES'),
+                'Payroll Enabled (folha de pagamento habilitada?) obrigatório': row.get('Payroll Enabled', 'No') or 'No',
                 'Employee Segment':                                          '',
             })
 
@@ -833,7 +858,7 @@ def write_wellhub_csv(wh_rows, filepath):
                 'Cost Center': row.get('Cost Center', ''),
                 'Office Zip': row.get('Office Zip', ''),
                 'Code Payroll': row.get('Code Payroll', ''),
-                'Payroll Enabled': row.get('Payroll Enabled', 'YES'),
+                'Payroll Enabled': row.get('Payroll Enabled', 'No') or 'No',
             })
 
 @app.route('/')
@@ -1102,7 +1127,7 @@ def api_process():
                     _w.writerow([
                         _row.get('Name',''), _row.get('Email',''),
                         _row.get('National ID',''), _row.get('Employee ID',''),
-                        '','','','', _row.get('Payroll Enabled','YES'), ''
+                        '','','','', _row.get('Payroll Enabled','No') or 'No', ''
                     ])
             _wh_csvs.append((_csv_path, _csv_name))
         _wh_zip = os.path.join(session_dir, 'wellhub_csv_todos.zip')
