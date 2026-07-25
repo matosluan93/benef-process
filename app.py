@@ -348,10 +348,27 @@ def _find_header(headers, aliases):
                     return h
     return ''
 
+def excel_file_fast(path):
+    try:
+        return pd.ExcelFile(path, engine='calamine')
+    except Exception:
+        return pd.ExcelFile(path)
+
+def read_excel_fast(path, **kwargs):
+    try:
+        return pd.read_excel(path, engine='calamine', **kwargs)
+    except Exception:
+        return pd.read_excel(path, **kwargs)
+
+def nonempty_rows_mask(df):
+    if df.empty:
+        return pd.Series([], index=df.index, dtype=bool)
+    return df.apply(lambda col: col.astype(str).str.strip().ne('')).any(axis=1)
+
 def _read_previous_first_table(path):
     if path.lower().endswith('.csv'):
         return pd.read_csv(path, dtype=str, sep=None, engine='python', na_filter=False)
-    return pd.read_excel(path, dtype=str, na_filter=False)
+    return read_excel_fast(path, dtype=str, na_filter=False)
 
 def _previous_source_path(session_dir):
     for ext in ('.xlsx', '.xls', '.csv'):
@@ -373,7 +390,7 @@ def _read_previous_client_choice(session_dir):
 def _previous_client_layout_to_internal(df):
     df = df.copy()
     df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
-    mask = df.apply(lambda row: row.astype(str).str.strip().ne('').any(), axis=1)
+    mask = nonempty_rows_mask(df)
     df = df[mask].reset_index(drop=True)
     headers = list(df.columns)
     col_map = {
@@ -419,16 +436,15 @@ def _load_and_rename(xl, sheet_map, per_sheet_map):
     """
     frames = []
     for grupo, sheet_name in sheet_map.items():
-        df = xl.parse(sheet_name, dtype=str, na_filter=False)
+        header_df = xl.parse(sheet_name, dtype=str, na_filter=False, nrows=0)
+        original_cols = list(header_df.columns)
+        sheet_cols = [str(c).strip().lstrip('\ufeff') for c in original_cols]
 
         # Remove BOM e espaços dos nomes de coluna
-        df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+        # Header already normalized above.
 
         # Remove linhas onde TODAS as células são vazias (compatível com na_filter=False)
-        mask = df.apply(lambda row: row.str.strip().ne('').any(), axis=1)
-        df = df[mask].reset_index(drop=True)
-
-        sheet_cols    = list(df.columns)
+        # The dataframe is loaded after we know the mapped columns.
         sheet_auto    = auto_map_cols(sheet_cols)
         sheet_col_map = per_sheet_map.get(grupo, {})
 
@@ -439,6 +455,22 @@ def _load_and_rename(xl, sheet_map, per_sheet_map):
                 rename[user_col] = f'_f_{key}'
             elif sheet_auto.get(key) and sheet_auto[key] in sheet_cols:
                 rename[sheet_auto[key]] = f'_f_{key}'
+
+        needed_cols = set(rename.keys())
+        usecols = [
+            original
+            for original, cleaned in zip(original_cols, sheet_cols)
+            if cleaned in needed_cols
+        ]
+        df = xl.parse(
+            sheet_name,
+            dtype=str,
+            na_filter=False,
+            usecols=usecols if usecols else None,
+        )
+        df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+        mask = nonempty_rows_mask(df)
+        df = df[mask].reset_index(drop=True)
 
         df = df.rename(columns=rename)
         df['_grupo'] = grupo
@@ -454,8 +486,8 @@ def _load_and_rename(xl, sheet_map, per_sheet_map):
     # chave porque é único por pessoa; matrícula pode repetir entre empresas.
     cpf_col = '_f_cpf'
     if cpf_col in consolidated.columns:
-        consolidated['_dedupe_cpf_norm'] = consolidated[cpf_col].apply(
-            lambda v: CPF_CLEAN.sub('', str(v)) if clean_val(v) else ''
+        consolidated['_dedupe_cpf_norm'] = (
+            consolidated[cpf_col].fillna('').astype(str).str.replace(CPF_CLEAN, '', regex=True)
         )
         consolidated['_dedupe_original_order'] = range(len(consolidated))
         consolidated = consolidated[consolidated['_dedupe_cpf_norm'].ne('')].copy()
@@ -498,14 +530,13 @@ def merge_current_previous_for_benefits(current_df, previous_df):
     combined = pd.concat([current, previous], ignore_index=True, sort=False)
     if '_f_cpf' not in combined.columns and '_f_email' not in combined.columns:
         return combined.drop(columns=['_base_priority', '_base_original_order'], errors='ignore')
-    combined['_merge_key'] = combined.apply(
-        lambda row: (
-            CPF_CLEAN.sub('', str(row.get('_f_cpf', '')))
-            if clean_val(row.get('_f_cpf', ''))
-            else norm_ascii(row.get('_f_email', ''))
-        ),
-        axis=1,
-    )
+    cpf_key = pd.Series('', index=combined.index, dtype='object')
+    email_key = pd.Series('', index=combined.index, dtype='object')
+    if '_f_cpf' in combined.columns:
+        cpf_key = combined['_f_cpf'].fillna('').astype(str).str.replace(CPF_CLEAN, '', regex=True)
+    if '_f_email' in combined.columns:
+        email_key = combined['_f_email'].fillna('').astype(str).map(norm_ascii)
+    combined['_merge_key'] = cpf_key.where(cpf_key.ne(''), email_key)
 
     keyed = combined[combined['_merge_key'].ne('')].copy()
     unkeyed = combined[combined['_merge_key'].eq('')].copy()
@@ -519,7 +550,24 @@ def _apply_date_conversion(df, internal_map):
     """Converte a coluna de admissão para Timestamp de forma centralizada."""
     adm_col = internal_map.get('data_admissao')
     if adm_col and adm_col in df.columns:
-        df[adm_col] = df[adm_col].apply(parse_mixed_dates)
+        vals = df[adm_col].fillna('').astype(str).str.strip()
+        parsed = pd.Series(pd.NaT, index=df.index, dtype='datetime64[ns]')
+        active = vals.ne('')
+        numeric = active & vals.str.replace('.', '', n=1, regex=False).str.isdigit()
+        if numeric.any():
+            parsed.loc[numeric] = pd.to_datetime(
+                pd.to_numeric(vals.loc[numeric], errors='coerce'),
+                origin='1899-12-30',
+                unit='D',
+                errors='coerce',
+            )
+        iso = active & ~numeric & vals.str.match(r'^\d{4}[-/]\d', na=False)
+        if iso.any():
+            parsed.loc[iso] = pd.to_datetime(vals.loc[iso], dayfirst=False, errors='coerce')
+        other = active & ~numeric & ~iso
+        if other.any():
+            parsed.loc[other] = pd.to_datetime(vals.loc[other], dayfirst=True, errors='coerce')
+        df[adm_col] = parsed
     return df, adm_col
 
 # ─── Processamento por processo ───────────────────────────────────────────────
@@ -880,7 +928,7 @@ def api_upload():
     f.save(upload_path)
 
     try:
-        xl       = pd.ExcelFile(upload_path)
+        xl       = excel_file_fast(upload_path)
         auto_map = auto_map_sheets(xl)
         return jsonify({
             'session_id':     session_id,
@@ -929,7 +977,7 @@ def api_upload_previous():
                 'layout': 'client_csv',
                 'columns': list(df.columns),
             })
-        xl = pd.ExcelFile(upload_path)
+        xl = excel_file_fast(upload_path)
         return jsonify({
             'sheet_names': xl.sheet_names,
             'auto_sheet_map': auto_map_sheets(xl),
@@ -948,12 +996,12 @@ def api_get_columns():
         return jsonify({'error': 'Sessão expirada.'}), 400
 
     try:
-        xl         = pd.ExcelFile(upload_path)
+        xl         = excel_file_fast(upload_path)
         sheet_data = {}
         for grupo, sheet_name in sheet_map.items():
             df = xl.parse(sheet_name, dtype=str, na_filter=False)
             df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
-            mask = df.apply(lambda row: row.str.strip().ne('').any(), axis=1)
+            mask = nonempty_rows_mask(df)
             df   = df[mask].reset_index(drop=True)
             cols = list(df.columns)
             sheet_data[grupo] = {
@@ -978,7 +1026,7 @@ def api_process():
         return jsonify({'error': 'Sessão expirada.'}), 400
 
     try:
-        xl           = pd.ExcelFile(upload_path)
+        xl           = excel_file_fast(upload_path)
         consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
         internal_map = {key: f'_f_{key}' for key in COL_ALIASES.keys()}
         internal_map['payroll_enabled'] = '_f_payroll_enabled'
@@ -998,17 +1046,21 @@ def api_process():
                     _read_previous_first_table(previous_path)
                 )
             else:
-                prev_xl = pd.ExcelFile(previous_path)
-                prev_sheet_map = previous_sheet_map or auto_map_sheets(prev_xl)
-                for grupo, sheet_name in sheet_map.items():
-                    if grupo not in prev_sheet_map and sheet_name in prev_xl.sheet_names:
-                        prev_sheet_map[grupo] = sheet_name
-                if prev_sheet_map:
-                    previous_consolidated = _load_and_rename(prev_xl, prev_sheet_map, per_sheet_map)
+                previous_client_layout = _previous_client_layout_to_internal(
+                    _read_previous_first_table(previous_path)
+                )
+                if '_previous_client_process' in previous_client_layout.columns:
+                    previous_consolidated = previous_client_layout
                 else:
-                    previous_consolidated = _previous_client_layout_to_internal(
-                        _read_previous_first_table(previous_path)
-                    )
+                    prev_xl = excel_file_fast(previous_path)
+                    prev_sheet_map = previous_sheet_map or auto_map_sheets(prev_xl)
+                    for grupo, sheet_name in sheet_map.items():
+                        if grupo not in prev_sheet_map and sheet_name in prev_xl.sheet_names:
+                            prev_sheet_map[grupo] = sheet_name
+                    if prev_sheet_map:
+                        previous_consolidated = _load_and_rename(prev_xl, prev_sheet_map, per_sheet_map)
+                    else:
+                        previous_consolidated = previous_client_layout
             previous_consolidated, _ = _apply_date_conversion(previous_consolidated, internal_map)
             if '_previous_client_process' in previous_consolidated.columns:
                 detected_previous_process = clean_val(previous_consolidated['_previous_client_process'].iloc[0])
@@ -1076,20 +1128,19 @@ def api_process():
 
         wh_by_cnpj   = {c: g for c, g in wh_by_cnpj.items() if is_wellhub_empresa(g['empresa'])}
         wh_file_meta = []
+        wh_csv_rows = []
         for cnpj, grp in wh_by_cnpj.items():
             safe_name = re.sub(r'[^\w]', '_', grp['empresa']).upper().strip('_')
             fname     = f"{safe_name}_Wellhub.xlsx"
             fpath     = os.path.join(session_dir, f"wh_{re.sub(r'[^\w]', '', cnpj)}.xlsx")
             write_styled_excel(grp['rows'], fpath, 'Wellhub', WELLHUB_COLS)
-            # guarda rows para uso no CSV
-            _rows_raw = grp['rows'][:]
+            wh_csv_rows.extend(grp['rows'])
             wh_file_meta.append({
                 'cnpj':     cnpj,
                 'empresa':  grp['empresa'],
                 'count':    len(grp['rows']),
                 'filepath': fpath,
                 'filename': fname,
-                '_rows_raw': _rows_raw,
             })
 
         zip_path = os.path.join(session_dir, 'wellhub_todos.zip')
@@ -1100,9 +1151,6 @@ def api_process():
         with open(os.path.join(session_dir, 'wh_meta.json'), 'w', encoding='utf-8') as jf:
             json.dump(wh_file_meta, jf, ensure_ascii=False)
 
-        wh_csv_rows = []
-        for meta in wh_file_meta:
-            wh_csv_rows.extend(meta.get('_rows_raw', []))
         write_wellhub_csv(wh_csv_rows, os.path.join(session_dir, 'wellhub_geral.csv'))
 
         # Mantem um ZIP legado com o CSV geral para compatibilidade interna.
@@ -1119,7 +1167,7 @@ def api_process():
             meta['csv_path'] = _csv_path
             meta['csv_name'] = _csv_name
             import pandas as _pd
-            _df = _pd.read_excel(meta['filepath'], dtype=str)
+            _df = read_excel_fast(meta['filepath'], dtype=str)
             with open(_csv_path, 'w', newline='', encoding='utf-8-sig') as _f:
                 _w = _csv.writer(_f, delimiter=';')
                 _w.writerow(_WCOLS)
@@ -1138,6 +1186,10 @@ def api_process():
         with open(os.path.join(session_dir, 'wh_meta.json'), 'w', encoding='utf-8') as jf:
             json.dump(wh_file_meta, jf, ensure_ascii=False)
 
+        wh_companies_public = [
+            {'cnpj': m['cnpj'], 'empresa': m['empresa'], 'count': m['count']}
+            for m in wh_file_meta
+        ]
 
         def count_reasons(rows):
             counts = {}
@@ -1160,7 +1212,7 @@ def api_process():
                 'eligible':  sum(m['count'] for m in wh_file_meta),
                 'excluded':  len(wh_excl),
                 'reasons':   count_reasons(wh_excl),
-                'companies': wh_file_meta,
+                'companies': wh_companies_public,
             },
             'nv': {'eligible': len(nv_rows),  'excluded': len(nv_excl),  'reasons': count_reasons(nv_excl)},
             'audit_count': len(audit_rows),
@@ -1180,7 +1232,7 @@ def api_preview():
         return jsonify({'error': 'Sessão expirada.'}), 400
 
     try:
-        xl           = pd.ExcelFile(upload_path)
+        xl           = excel_file_fast(upload_path)
         consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
         internal_map = {key: f'_f_{key}' for key in COL_ALIASES.keys()}
         consolidated, _ = _apply_date_conversion(consolidated, internal_map)
@@ -1415,7 +1467,7 @@ def api_upload_mar_saude():
     upload_path = os.path.join(session_dir, 'ms_source.xlsx')
     f.save(upload_path)
     try:
-        xl = pd.ExcelFile(upload_path)
+        xl = excel_file_fast(upload_path)
         return jsonify({'session_id': sid, 'sheet_names': xl.sheet_names, 'filename': f.filename})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1430,8 +1482,8 @@ def api_get_columns_mar_saude():
     if not os.path.exists(upload_path):
         return jsonify({'error': 'Sessão expirada.'}), 400
     try:
-        df = pd.read_excel(upload_path, sheet_name=sheet_name, dtype=str,
-                           keep_default_na=False, nrows=0)
+        df = read_excel_fast(upload_path, sheet_name=sheet_name, dtype=str,
+                             keep_default_na=False, nrows=0)
         df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
         cols = list(df.columns)
         return jsonify({'headers': cols, 'auto_map': _auto_map_ms(cols), 'row_count': None})
@@ -1450,17 +1502,17 @@ def api_process_mar_saude():
         return jsonify({'error': 'Sessão expirada.'}), 400
     try:
         # Lê headers primeiro → seleciona só colunas necessárias
-        _hdr_ms = pd.read_excel(upload_path, sheet_name=sheet_name, dtype=str,
-                                keep_default_na=False, nrows=0)
+        _hdr_ms = read_excel_fast(upload_path, sheet_name=sheet_name, dtype=str,
+                                  keep_default_na=False, nrows=0)
         _hdr_ms.columns = [str(c).strip().lstrip('\ufeff') for c in _hdr_ms.columns]
         _auto_ms   = _auto_map_ms(list(_hdr_ms.columns))
         _fmap_peek = {**_auto_ms, **{k: v for k, v in col_map_usr.items() if v}}
         _needed_ms = list({v for v in _fmap_peek.values() if v and v in _hdr_ms.columns})
-        df = pd.read_excel(upload_path, sheet_name=sheet_name, dtype=str,
-                           keep_default_na=False,
-                           usecols=_needed_ms if _needed_ms else None)
+        df = read_excel_fast(upload_path, sheet_name=sheet_name, dtype=str,
+                             keep_default_na=False,
+                             usecols=_needed_ms if _needed_ms else None)
         df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
-        mask = df.apply(lambda row: row.astype(str).str.strip().ne('').any(), axis=1)
+        mask = nonempty_rows_mask(df)
         df = df[mask].reset_index(drop=True)
 
         auto = _auto_map_ms(list(df.columns))
@@ -1771,8 +1823,8 @@ def _read_expert_header(src, sheet_name='Planilha1'):
         if df is None:
             raise ValueError('Erro ao ler CSV.')
     else:
-        df = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
-                           keep_default_na=False, nrows=0)
+        df = read_excel_fast(src, sheet_name=sheet_name, dtype=str,
+                             keep_default_na=False, nrows=0)
     df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
     return df
 
@@ -1806,9 +1858,9 @@ def _read_expert_dataframe(src, sheet_name='Planilha1', col_map_usr=None):
         if df is None:
             raise ValueError('Erro ao ler CSV.')
     else:
-        df = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
-                           keep_default_na=False,
-                           usecols=needed if needed else None)
+        df = read_excel_fast(src, sheet_name=sheet_name, dtype=str,
+                             keep_default_na=False,
+                             usecols=needed if needed else None)
 
     df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
     df = df[df.apply(lambda r: r.astype(str).str.strip().ne('').any(), axis=1)].reset_index(drop=True)
@@ -2160,7 +2212,7 @@ def api_upload_expert():
         if ext == '.csv':
             sheet_names = ['Planilha1']
         else:
-            sheet_names = pd.ExcelFile(upload_path).sheet_names
+            sheet_names = excel_file_fast(upload_path).sheet_names
         return jsonify({'session_id': sid, 'sheet_names': sheet_names,
                         'filename': f.filename, 'ext': ext})
     except Exception as e:
@@ -2291,8 +2343,8 @@ def api_process_expert():
             if _hdr is None:
                 return jsonify({'error': 'Erro ao ler CSV.'}), 500
         else:
-            _hdr = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
-                                 keep_default_na=False, nrows=0)
+            _hdr = read_excel_fast(src, sheet_name=sheet_name, dtype=str,
+                                   keep_default_na=False, nrows=0)
 
         _hdr.columns = [str(c).strip().lstrip('﻿') for c in _hdr.columns]
         auto      = _auto_map_expert(list(_hdr.columns))
@@ -2317,9 +2369,9 @@ def api_process_expert():
             if df is None:
                 return jsonify({'error': 'Erro ao ler CSV.'}), 500
         else:
-            df = pd.read_excel(src, sheet_name=sheet_name, dtype=str,
-                               keep_default_na=False,
-                               usecols=_needed if _needed else None)
+            df = read_excel_fast(src, sheet_name=sheet_name, dtype=str,
+                                 keep_default_na=False,
+                                 usecols=_needed if _needed else None)
         df.columns = [str(c).strip().lstrip('﻿') for c in df.columns]
         df = df[df.apply(lambda r: r.astype(str).str.strip().ne('').any(), axis=1)].reset_index(drop=True)
         for dk in ('dt_admissao', 'dt_nascimento'):
@@ -2430,8 +2482,8 @@ def download_expert_ppt(session_id):
         if not os.path.exists(ativos_path) or not os.path.exists(inativos_path):
             return 'PPT não encontrado. Processe a base Expert antes de baixar a apresentação.', 404
         try:
-            ativos = pd.read_excel(ativos_path, dtype=str).fillna('').to_dict('records')
-            inativos = pd.read_excel(inativos_path, dtype=str).fillna('').to_dict('records')
+            ativos = read_excel_fast(ativos_path, dtype=str).fillna('').to_dict('records')
+            inativos = read_excel_fast(inativos_path, dtype=str).fillna('').to_dict('records')
             if not _generate_expert_ppt(ativos, inativos, [], p):
                 return 'Dependência ausente para gerar PPT. Instale python-pptx.', 500
         except Exception as e:
