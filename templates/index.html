@@ -1382,17 +1382,8 @@ function confirmColumns() {
 
 // ─── Step 4: Preview ─────────────────────────────────────────────────────────
 async function renderPreview() {
-  const grupos = ['Stefanini', 'Topaz', 'IHM'];
-
-  // Group counts from sheetData
   const gc = document.getElementById('groupCounts');
-  gc.innerHTML = '';
-  let total = 0;
-  for (const [g, d] of Object.entries(S.sheetData)) {
-    total += d.row_count;
-    gc.innerHTML += `<div class="group-count"><div class="num">${d.row_count}</div><div class="lbl">${g}</div></div>`;
-  }
-  gc.innerHTML += `<div class="group-count total-card"><div class="num">${total}</div><div class="lbl">Total</div></div>`;
+  gc.innerHTML = `<div class="group-count total-card"><div class="num">...</div><div class="lbl">Lendo somente as abas selecionadas</div></div>`;
 
   // Fetch preview rows from server
   showLoading('Carregando prévia...');
@@ -1412,6 +1403,13 @@ async function renderPreview() {
     const data = await res.json();
     hideLoading();
     if (data.error) { showAlert(data.error); return; }
+
+    gc.innerHTML = '';
+    for (const grupo of ['Stefanini', 'Topaz', 'IHM']) {
+      const count = (data.group_counts || {})[grupo] || 0;
+      gc.innerHTML += `<div class="group-count"><div class="num">${count}</div><div class="lbl">${grupo}</div></div>`;
+    }
+    gc.innerHTML += `<div class="group-count total-card"><div class="num">${data.total}</div><div class="lbl">Total consolidado</div></div>`;
 
     const tbody = document.getElementById('previewTbody');
     tbody.innerHTML = '';

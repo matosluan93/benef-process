@@ -387,6 +387,38 @@ def _read_previous_client_choice(session_dir):
     choice = norm_ascii(open(path, encoding='utf-8').read().strip())
     return choice if choice in {'totalpass', 'wellhub'} else ''
 
+def _consolidated_cache_paths(session_dir):
+    return (
+        os.path.join(session_dir, 'consolidated.pkl'),
+        os.path.join(session_dir, 'consolidated_map.json'),
+    )
+
+def _mapping_signature(sheet_map, per_sheet_map):
+    return json.dumps(
+        {'sheet_map': sheet_map, 'per_sheet_map': per_sheet_map},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+def _read_consolidated_cache(session_dir, sheet_map, per_sheet_map):
+    cache_path, meta_path = _consolidated_cache_paths(session_dir)
+    if not os.path.exists(cache_path) or not os.path.exists(meta_path):
+        return None
+    try:
+        with open(meta_path, encoding='utf-8') as meta_f:
+            cached_signature = meta_f.read()
+        if cached_signature != _mapping_signature(sheet_map, per_sheet_map):
+            return None
+        return pd.read_pickle(cache_path)
+    except Exception:
+        return None
+
+def _write_consolidated_cache(session_dir, sheet_map, per_sheet_map, consolidated):
+    cache_path, meta_path = _consolidated_cache_paths(session_dir)
+    consolidated.to_pickle(cache_path)
+    with open(meta_path, 'w', encoding='utf-8') as meta_f:
+        meta_f.write(_mapping_signature(sheet_map, per_sheet_map))
+
 def _previous_client_layout_to_internal(df):
     df = df.copy()
     df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
@@ -999,15 +1031,12 @@ def api_get_columns():
         xl         = excel_file_fast(upload_path)
         sheet_data = {}
         for grupo, sheet_name in sheet_map.items():
-            df = xl.parse(sheet_name, dtype=str, na_filter=False)
-            df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
-            mask = nonempty_rows_mask(df)
-            df   = df[mask].reset_index(drop=True)
-            cols = list(df.columns)
+            header_df = xl.parse(sheet_name, dtype=str, na_filter=False, nrows=0)
+            cols = [str(c).strip().lstrip('\ufeff') for c in header_df.columns]
             sheet_data[grupo] = {
                 'headers':   cols,
                 'auto_map':  auto_map_cols(cols),
-                'row_count': len(df),
+                'row_count': None,
             }
         return jsonify({'sheet_data': sheet_data})
     except Exception as e:
@@ -1026,8 +1055,16 @@ def api_process():
         return jsonify({'error': 'Sessão expirada.'}), 400
 
     try:
-        xl           = excel_file_fast(upload_path)
-        consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
+        session_dir = os.path.join(TEMP_DIR, sid)
+        consolidated = _read_consolidated_cache(
+            session_dir, sheet_map, per_sheet_map
+        )
+        if consolidated is None:
+            xl = excel_file_fast(upload_path)
+            consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
+            _write_consolidated_cache(
+                session_dir, sheet_map, per_sheet_map, consolidated
+            )
         internal_map = {key: f'_f_{key}' for key in COL_ALIASES.keys()}
         internal_map['payroll_enabled'] = '_f_payroll_enabled'
 
@@ -1232,8 +1269,16 @@ def api_preview():
         return jsonify({'error': 'Sessão expirada.'}), 400
 
     try:
-        xl           = excel_file_fast(upload_path)
-        consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
+        session_dir = os.path.join(TEMP_DIR, sid)
+        consolidated = _read_consolidated_cache(
+            session_dir, sheet_map, per_sheet_map
+        )
+        if consolidated is None:
+            xl = excel_file_fast(upload_path)
+            consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
+            _write_consolidated_cache(
+                session_dir, sheet_map, per_sheet_map, consolidated
+            )
         internal_map = {key: f'_f_{key}' for key in COL_ALIASES.keys()}
         consolidated, _ = _apply_date_conversion(consolidated, internal_map)
 
@@ -1252,7 +1297,15 @@ def api_preview():
                 '_grupo':       row.get('_grupo', ''),
             })
 
-        return jsonify({'rows': rows, 'total': len(consolidated)})
+        group_counts = {
+            str(group): int(count)
+            for group, count in consolidated['_grupo'].value_counts().items()
+        } if '_grupo' in consolidated.columns else {}
+        return jsonify({
+            'rows': rows,
+            'total': len(consolidated),
+            'group_counts': group_counts,
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
