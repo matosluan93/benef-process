@@ -178,12 +178,21 @@ def clean_val(v):
 def format_cpf(v):
     """
     FIX: CPF da Topaz chega sem formatação ('61213829020').
-    Formata para '612.138.290-20' quando há exatamente 11 dígitos.
+    Formata para '612.138.290-20' e recupera zero inicial perdido no Excel.
     """
     raw = CPF_CLEAN.sub('', str(v))
+    if len(raw) == 10:
+        raw = raw.zfill(11)
     if len(raw) == 11:
         return f'{raw[:3]}.{raw[3:6]}.{raw[6:9]}-{raw[9:]}'
     return clean_val(v)
+
+def normalize_cpf_key(v):
+    """Normaliza CPF para cruzamento, incluindo zero inicial perdido no Excel."""
+    raw = CPF_CLEAN.sub('', clean_val(v))
+    if 0 < len(raw) <= 11:
+        return raw.zfill(11)
+    return raw
 
 
 def format_cnpj(v):
@@ -427,7 +436,10 @@ def _previous_client_layout_to_internal(df):
     headers = list(df.columns)
     col_map = {
         'empresa': _find_header(headers, ['nome da empresa', 'nome empresa', 'empresa']),
-        'cnpj': _find_header(headers, ['cnpj', 'cnpj empresa', 'cnpj da empresa', 'cnpj_empresa']),
+        'cnpj': _find_header(headers, [
+            'cnpj', 'cnpj empresa', 'cnpj da empresa', 'cnpj_empresa',
+            'company tax id',
+        ]),
         'nome': _find_header(headers, ['nome do profissional', 'nome profissional', 'name nome', 'name', 'nome']),
         'data_admissao': _find_header(headers, ['data de admissao', 'data de admissão', 'admissao', 'admissão']),
         'email': _find_header(headers, ['email do profissional', 'email obrigatorio', 'email obrigatório', 'email colaborador', 'e mail colaborador', 'email', 'e mail']),
@@ -546,7 +558,12 @@ def _load_and_rename(xl, sheet_map, per_sheet_map):
 
 
 def merge_current_previous_for_benefits(current_df, previous_df):
-    """Une base atual + passada para TotalPass/WellHub, priorizando a atual."""
+    """
+    Cruza base atual + passada para TotalPass/WellHub.
+
+    A base atual sempre vence. A passada só acrescenta profissionais que não
+    correspondam por CPF, e-mail ou matrícula + nome a um registro já mantido.
+    """
     if previous_df is None or previous_df.empty:
         return current_df.copy()
     if current_df is None or current_df.empty:
@@ -560,23 +577,54 @@ def merge_current_previous_for_benefits(current_df, previous_df):
     previous['_base_original_order'] = range(len(previous))
 
     combined = pd.concat([current, previous], ignore_index=True, sort=False)
-    if '_f_cpf' not in combined.columns and '_f_email' not in combined.columns:
-        return combined.drop(columns=['_base_priority', '_base_original_order'], errors='ignore')
-    cpf_key = pd.Series('', index=combined.index, dtype='object')
-    email_key = pd.Series('', index=combined.index, dtype='object')
-    if '_f_cpf' in combined.columns:
-        cpf_key = combined['_f_cpf'].fillna('').astype(str).str.replace(CPF_CLEAN, '', regex=True)
-    if '_f_email' in combined.columns:
-        email_key = combined['_f_email'].fillna('').astype(str).map(norm_ascii)
-    combined['_merge_key'] = cpf_key.where(cpf_key.ne(''), email_key)
+    combined = combined.sort_values(
+        ['_base_priority', '_base_original_order']
+    ).reset_index(drop=True)
 
-    keyed = combined[combined['_merge_key'].ne('')].copy()
-    unkeyed = combined[combined['_merge_key'].eq('')].copy()
-    keyed = keyed.sort_values(['_merge_key', '_base_priority', '_base_original_order'])
-    keyed = keyed.drop_duplicates('_merge_key', keep='first')
-    merged = pd.concat([keyed, unkeyed], ignore_index=True, sort=False)
-    merged = merged.sort_values(['_base_priority', '_base_original_order']).reset_index(drop=True)
-    return merged.drop(columns=['_merge_key', '_base_priority', '_base_original_order'], errors='ignore')
+    def identity_series(column, normalizer):
+        if column not in combined.columns:
+            return pd.Series('', index=combined.index, dtype='object')
+        return combined[column].fillna('').astype(str).map(normalizer)
+
+    cpf_keys = identity_series('_f_cpf', normalize_cpf_key)
+    email_keys = identity_series('_f_email', norm_ascii)
+    email_keys = email_keys.where(email_keys.str.contains('@', regex=False), '')
+    name_keys = identity_series('_f_nome', norm_ascii)
+    matricula_keys = identity_series('_f_matricula', norm_ascii)
+    employee_keys = pd.Series('', index=combined.index, dtype='object')
+    has_employee_key = matricula_keys.ne('') & name_keys.ne('')
+    employee_keys.loc[has_employee_key] = (
+        matricula_keys.loc[has_employee_key] + '|' + name_keys.loc[has_employee_key]
+    )
+
+    seen_cpf = set()
+    seen_email = set()
+    seen_employee = set()
+    keep_rows = []
+    for idx in combined.index:
+        cpf = cpf_keys.at[idx]
+        email = email_keys.at[idx]
+        employee = employee_keys.at[idx]
+        duplicate = (
+            (cpf and cpf in seen_cpf)
+            or (email and email in seen_email)
+            or (employee and employee in seen_employee)
+        )
+        keep_rows.append(not duplicate)
+
+        # Mesmo uma linha descartada pode ligar identificadores antigos e novos.
+        if cpf:
+            seen_cpf.add(cpf)
+        if email:
+            seen_email.add(email)
+        if employee:
+            seen_employee.add(employee)
+
+    merged = combined[pd.Series(keep_rows, index=combined.index)].copy()
+    return merged.drop(
+        columns=['_base_priority', '_base_original_order'],
+        errors='ignore',
+    ).reset_index(drop=True)
 
 def _apply_date_conversion(df, internal_map):
     """Converte a coluna de admissão para Timestamp de forma centralizada."""
@@ -1156,7 +1204,7 @@ def api_process():
         for r in wh_elig:
             cnpj_raw = clean_val(r.get(cnpj_col, ''))
             emp_raw  = clean_val(r.get(emp_col, ''))
-            cnpj     = cnpj_raw if cnpj_raw else f"GRUPO_{r.get('_grupo', '')}"
+            cnpj     = format_cnpj(cnpj_raw) if cnpj_raw else f"GRUPO_{r.get('_grupo', '')}"
             empresa  = emp_raw  if emp_raw  else r.get('_grupo', '')
             if cnpj not in wh_by_cnpj:
                 wh_by_cnpj[cnpj] = {'empresa': empresa, 'rows': []}
@@ -1168,8 +1216,9 @@ def api_process():
         wh_csv_rows = []
         for cnpj, grp in wh_by_cnpj.items():
             safe_name = re.sub(r'[^\w]', '_', grp['empresa']).upper().strip('_')
-            fname     = f"{safe_name}_Wellhub.xlsx"
-            fpath     = os.path.join(session_dir, f"wh_{re.sub(r'[^\w]', '', cnpj)}.xlsx")
+            safe_cnpj = re.sub(r'[^\w]', '', cnpj)
+            fname     = f"{safe_name}_{safe_cnpj}_Wellhub.xlsx"
+            fpath     = os.path.join(session_dir, f"wh_{safe_cnpj}.xlsx")
             write_styled_excel(grp['rows'], fpath, 'Wellhub', WELLHUB_COLS)
             wh_csv_rows.extend(grp['rows'])
             wh_file_meta.append({
