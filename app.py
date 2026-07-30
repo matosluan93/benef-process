@@ -404,7 +404,11 @@ def _consolidated_cache_paths(session_dir):
 
 def _mapping_signature(sheet_map, per_sheet_map):
     return json.dumps(
-        {'sheet_map': sheet_map, 'per_sheet_map': per_sheet_map},
+        {
+            'cache_version': 2,
+            'sheet_map': sheet_map,
+            'per_sheet_map': per_sheet_map,
+        },
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -535,24 +539,44 @@ def _load_and_rename(xl, sheet_map, per_sheet_map):
         )
         consolidated['_dedupe_original_order'] = range(len(consolidated))
         consolidated = consolidated[consolidated['_dedupe_cpf_norm'].ne('')].copy()
+        # Quando o CPF também aparece na base geral Stefanini, a aba específica
+        # define o grupo correto e, consequentemente, a regra de domínio aplicada.
+        consolidated['_dedupe_group_rank'] = (
+            consolidated['_grupo'].map({'Topaz': 0, 'IHM': 0, 'Stefanini': 1}).fillna(2)
+        )
 
         vinculo_col = '_f_tipo_vinculo'
         if vinculo_col in consolidated.columns:
             # Mesmo CPF em mais de uma aba: se existir uma ocorrencia nao-PJ,
-            # ela tem prioridade. Se todas forem PJ, a regra remove normalmente.
+            # ela tem prioridade. Em empate, prevalece a aba específica.
             consolidated['_dedupe_pj_rank'] = consolidated[vinculo_col].apply(
                 lambda v: 1 if any(k in norm_ascii(v) for k in PJ_KW) else 0
             )
             consolidated = consolidated.sort_values(
-                ['_dedupe_cpf_norm', '_dedupe_pj_rank', '_dedupe_original_order']
+                [
+                    '_dedupe_cpf_norm',
+                    '_dedupe_pj_rank',
+                    '_dedupe_group_rank',
+                    '_dedupe_original_order',
+                ]
             )
             consolidated = consolidated.drop_duplicates('_dedupe_cpf_norm', keep='first')
             consolidated = consolidated.sort_values('_dedupe_original_order')
             consolidated = consolidated.drop(columns=['_dedupe_pj_rank'])
         else:
+            consolidated = consolidated.sort_values(
+                ['_dedupe_cpf_norm', '_dedupe_group_rank', '_dedupe_original_order']
+            )
             consolidated = consolidated.drop_duplicates('_dedupe_cpf_norm', keep='first')
+            consolidated = consolidated.sort_values('_dedupe_original_order')
 
-        consolidated = consolidated.drop(columns=['_dedupe_cpf_norm', '_dedupe_original_order'])
+        consolidated = consolidated.drop(
+            columns=[
+                '_dedupe_cpf_norm',
+                '_dedupe_original_order',
+                '_dedupe_group_rank',
+            ]
+        )
         consolidated = consolidated.reset_index(drop=True)
     return consolidated
 
