@@ -4,6 +4,7 @@ import re
 import json
 import zipfile
 import unicodedata
+from decimal import Decimal, InvalidOperation
 from datetime import date
 from ppt_generator import generate as generate_ppt
 from flask import Flask, request, jsonify, render_template, send_file
@@ -197,13 +198,25 @@ def normalize_cpf_key(v):
 
 def format_cnpj(v):
     """Formata CNPJ como XX.XXX.XXX/XXXX-XX, corrigindo zeros à esquerda."""
-    digits = ''.join(filter(str.isdigit, str(v or '')))
+    raw = clean_val(v)
+    numeric_text = raw.replace(',', '.')
+    if re.fullmatch(r'[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?', numeric_text):
+        try:
+            numeric_value = Decimal(numeric_text)
+            if numeric_value == numeric_value.to_integral_value():
+                digits = format(numeric_value, 'f').split('.')[0].lstrip('+')
+            else:
+                digits = ''.join(filter(str.isdigit, raw))
+        except InvalidOperation:
+            digits = ''.join(filter(str.isdigit, raw))
+    else:
+        digits = ''.join(filter(str.isdigit, raw))
     if not digits:
-        return str(v or '').strip()
+        return raw
     digits = digits.zfill(14)
     if len(digits) == 14:
         return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:]}"
-    return str(v or '').strip()
+    return raw
 
 
 # ─── Parsing de datas ─────────────────────────────────────────────────────────
@@ -815,6 +828,7 @@ COL_WIDTHS = {
     'Data de Admissão': 18, 'Email Funcional': 38, 'CPF do profissional': 22,
     'Processo': 14, 'Motivo da exclusão': 38, 'Data de processamento': 22,
 }
+EXCEL_CNPJ_COLUMNS = {'CNPJ da Empresa', 'CNPJ'}
 
 def to_final_row(row_dict, col_map):
     get = lambda k: clean_val(row_dict.get(col_map.get(k, '___absent___'), ''))
@@ -859,6 +873,8 @@ def write_fast_excel(rows, filepath, sheet_name, columns):
     _df = pd.DataFrame(rows if rows else [dict.fromkeys(columns, '')])
     _df = _df.reindex(columns=columns, fill_value='')
     for c in _df.columns:
+        if c in EXCEL_CNPJ_COLUMNS:
+            _df[c] = _df[c].map(format_cnpj)
         _df[c] = _df[c].astype(str).replace({'nan':'','None':''})
     _df.to_excel(filepath, sheet_name=sheet_name[:31], index=False, engine='openpyxl')
     _wb = _lw(filepath)
@@ -900,7 +916,12 @@ def write_styled_excel(rows, filepath, sheet_name, columns):
 
     for row_idx, row_data in enumerate(rows, start=1):
         for col_idx, col_name in enumerate(columns):
-            ws.write(row_idx, col_idx, str(row_data.get(col_name, "") or ""))
+            value = str(row_data.get(col_name, "") or "")
+            if col_name in EXCEL_CNPJ_COLUMNS:
+                value = format_cnpj(value)
+                ws.write_string(row_idx, col_idx, value)
+            else:
+                ws.write(row_idx, col_idx, value)
 
     ws.freeze_panes(1, 0)
     wb.close()
