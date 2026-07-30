@@ -757,18 +757,20 @@ def check_nv(row, col_map, vinculo):
     return None
 
 WELLHUB_COLS = [
-    'CNPJ',
-    'Nome da Empresa',
-    'Nome do profissional',
-    'Data de Admissão',
-    'Email do profissional',
-    'CPF',
-    'Matrícula',
+    'Company Tax ID',
+    'Nome empresa',
+    'Name',
+    'data de admissão',
+    'Email',
+    'National ID',
+    'Employee ID',
     'Department',
     'Cost Center',
-    'Office Zip',
-    'Code Payroll',
+    'Office Zip Code',
+    'Payroll ID',
     'Payroll Enabled',
+    'Employee Segment',
+    'Discount Group',
 ]
 
 WELLHUB_EMPRESAS_KW = [
@@ -851,19 +853,33 @@ def to_wellhub_row(row_dict, col_map):
     adm_col = col_map.get('data_admissao', '')
     adm_val = row_dict.get(adm_col, '') if adm_col else ''
     payroll_val = wellhub_payroll_enabled(row_dict, col_map)
+    cnpj_digits = ''.join(filter(str.isdigit, format_cnpj(get('cnpj'))))
+    cpf_digits = normalize_cpf_key(
+        row_dict.get(col_map.get('cpf', '___absent___'), '')
+    )
+    admission_date = ''
+    try:
+        if not pd.isna(adm_val):
+            parsed_admission = pd.to_datetime(adm_val, errors='coerce', dayfirst=True)
+            if not pd.isna(parsed_admission):
+                admission_date = parsed_admission.strftime('%Y-%m-%d')
+    except (TypeError, ValueError):
+        admission_date = ''
     return {
-        'CNPJ':                  get('cnpj'),
-        'Nome da Empresa':       get('empresa'),
-        'Nome do profissional':  get('nome'),
-        'Data de Admissão':      format_date_val(adm_val),
-        'Email do profissional': get('email'),
-        'CPF':                   format_cpf(row_dict.get(col_map.get('cpf', '___absent___'), '')),
-        'Matrícula':             get('matricula'),
-        'Department':            '',
-        'Cost Center':           '',
-        'Office Zip':            '',
-        'Code Payroll':          '',
-        'Payroll Enabled':       payroll_val,
+        'Company Tax ID':  cnpj_digits,
+        'Nome empresa':    get('empresa'),
+        'Name':            get('nome'),
+        'data de admissão': admission_date,
+        'Email':           get('email'),
+        'National ID':     cpf_digits,
+        'Employee ID':     get('matricula'),
+        'Department':      '',
+        'Cost Center':     '',
+        'Office Zip Code': '',
+        'Payroll ID':      '',
+        'Payroll Enabled': payroll_val.upper(),
+        'Employee Segment': '',
+        'Discount Group':   '',
     }
 
 
@@ -999,40 +1015,13 @@ def _write_wellhub_csv_legacy(wh_rows, filepath):
             })
 
 def write_wellhub_csv(wh_rows, filepath):
-    """Layout WellHub consolidado para envio ao cliente."""
+    """Layout oficial WellHub consolidado para envio ao cliente."""
     import csv
-    cols = [
-        'CNPJ',
-        'Nome da Empresa',
-        'Nome do profissional',
-        'Data de Admissão',
-        'Email do profissional',
-        'CPF',
-        'Matrícula',
-        'Department',
-        'Cost Center',
-        'Office Zip',
-        'Code Payroll',
-        'Payroll Enabled',
-    ]
     with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.DictWriter(f, fieldnames=cols, delimiter=';')
+        writer = csv.DictWriter(f, fieldnames=WELLHUB_COLS, delimiter=';')
         writer.writeheader()
         for row in wh_rows:
-            writer.writerow({
-                'CNPJ': row.get('CNPJ', ''),
-                'Nome da Empresa': row.get('Nome da Empresa', ''),
-                'Nome do profissional': row.get('Nome do profissional', ''),
-                'Data de Admissão': row.get('Data de Admissão', ''),
-                'Email do profissional': row.get('Email do profissional', ''),
-                'CPF': row.get('CPF', ''),
-                'Matrícula': row.get('Matrícula', ''),
-                'Department': row.get('Department', ''),
-                'Cost Center': row.get('Cost Center', ''),
-                'Office Zip': row.get('Office Zip', ''),
-                'Code Payroll': row.get('Code Payroll', ''),
-                'Payroll Enabled': row.get('Payroll Enabled', 'No') or 'No',
-            })
+            writer.writerow({col: row.get(col, '') for col in WELLHUB_COLS})
 
 @app.route('/')
 def index():
