@@ -461,6 +461,9 @@ def slide_empresas(prs, data):
         'IHM': 'IHM',
     }
     items = [(nomes_curtos.get(k, k[:22]), v) for k, v in list(pe.items())[:6]]
+    if not items:
+        add_text(s, 'Nenhuma empresa com exclusões registradas.', 0.5, 1.4, 9, 0.4, size=14, color=GRAY)
+        return
 
     cd = CategoryChartData()
     cd.categories = [n for n, _ in items]
@@ -498,12 +501,13 @@ def slide_empresas(prs, data):
     set_chart_datalabel_size(chart, 12, True)
 
     top2 = items[:2]
+    top_labels = ' + '.join(f'{name} ({count:,})' for name, count in top2)
     soma_top2 = sum(v for _, v in top2)
     excl = data['total_excluidos']
     pct_top2 = soma_top2 / excl * 100 if excl else 0
     add_rect(s, 0.5, 5.08, 9.0, 0.38, LIGHT)
     add_text(s,
-             f"{top2[0][0]} ({top2[0][1]:,}) + {top2[1][0]} ({top2[1][1]:,}) = {soma_top2:,} exclusões — {pct_top2:.1f}% do total".replace(',', '.').replace('.', ',', 2),
+             f"{top_labels} = {soma_top2:,} exclusões — {pct_top2:.1f}% do total".replace(',', '.').replace('.', ',', 2),
              0.65, 5.1, 8.6, 0.32, size=10, bold=True, color=NAVY)
 
 
