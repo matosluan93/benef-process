@@ -1,22 +1,156 @@
 import os
 import uuid
 import re
+import secrets
+import tempfile
+from contextlib import contextmanager
+from ipaddress import ip_address
+from pathlib import Path
+from threading import Lock
 import json
 import zipfile
 import unicodedata
 from decimal import Decimal, InvalidOperation
 from datetime import date
 from ppt_generator import generate as generate_ppt
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, abort, request, jsonify, render_template, send_file, session
+from werkzeug.exceptions import HTTPException
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB
+app.config.update(
+    MAX_CONTENT_LENGTH=500 * 1024 * 1024,  # 500MB
+    SECRET_KEY=os.environ.get('BENEFPROCESS_SECRET_KEY') or secrets.token_hex(32),
+    SESSION_COOKIE_NAME='benefprocess_session',
+    SESSION_COOKIE_SAMESITE='Strict',
+)
 
 TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
 os.makedirs(TEMP_DIR, exist_ok=True)
+_UPLOAD_LOCK = Lock()
+
+SESSION_ID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}')
+
+
+@app.before_request
+def _restrict_local_requests():
+    if not re.fullmatch(r'(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?', request.host, re.IGNORECASE | re.ASCII):
+        abort(400)
+    if not request.remote_addr or not ip_address(request.remote_addr).is_loopback:
+        abort(403)
+    origin = request.headers.get('Origin')
+    if request.method == 'POST' and origin and origin != request.host_url.rstrip('/'):
+        abort(403)
+
+
+@app.after_request
+def _protect_response(response):
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
+@app.errorhandler(HTTPException)
+def _http_error(error):
+    response = error.get_response()
+    messages = {
+        400: 'Requisição inválida.',
+        403: 'Acesso negado.',
+        404: 'Recurso não encontrado.',
+        405: 'Método não permitido.',
+        413: 'O arquivo excede o tamanho permitido.',
+        415: 'Formato de requisição inválido.',
+    }
+    response.set_data(app.json.dumps({
+        'error': error.description if isinstance(error, SessionRequestError)
+        else messages.get(error.code, 'Não foi possível atender à requisição.'),
+    }))
+    response.mimetype = 'application/json'
+    return response
+
+
+@app.errorhandler(Exception)
+def _unexpected_error(error):
+    return _operation_error(error)
+
+
+def _operation_error(error, message='Não foi possível concluir a operação.'):
+    # Erros de bibliotecas podem conter caminhos e dados da planilha.
+    app.logger.error('Falha em %s (%s)', request.endpoint, type(error).__name__)
+    return jsonify({'error': message}), 500
+
+
+class SessionRequestError(HTTPException):
+    def __init__(self, status, message):
+        super().__init__(description=message)
+        self.code = status
+
+
+def _browser_owner():
+    if 'owner' not in session:
+        session['owner'] = secrets.token_hex(32)
+    return session['owner']
+
+
+def _new_session():
+    sid = str(uuid.uuid4())
+    directory = Path(TEMP_DIR).resolve() / sid
+    directory.mkdir(mode=0o700)
+    (directory / '.owner').write_text(_browser_owner(), encoding='ascii')
+    return sid, str(directory)
+
+
+def _session_dir(sid):
+    if not isinstance(sid, str) or not SESSION_ID_RE.fullmatch(sid):
+        raise SessionRequestError(400, 'Sessão inválida. Envie a base novamente.')
+    owner = session.get('owner')
+    if owner:
+        directory = Path(TEMP_DIR).resolve() / sid
+        try:
+            marker = directory / '.owner'
+            if (directory.resolve() == directory and directory.is_dir()
+                    and marker.resolve() == marker and marker.is_file()
+                    and secrets.compare_digest(marker.read_bytes(), owner.encode('ascii'))):
+                # A pasta é plana. Rejeita links e junções nos arquivos da sessão.
+                if all(path.resolve() == path and not path.is_dir() for path in directory.iterdir()):
+                    return str(directory)
+        except (OSError, RuntimeError):
+            pass
+    raise SessionRequestError(404, 'Sessão indisponível. Envie a base novamente.')
+
+
+def _json_object():
+    data = request.get_json()
+    if not isinstance(data, dict):
+        abort(400)
+    return data
+
+
+@contextmanager
+def _staged_upload(upload, destination):
+    # Só substitui a base depois que o arquivo é recebido e validado.
+    with tempfile.NamedTemporaryFile(
+        dir=os.path.dirname(destination), suffix=Path(destination).suffix, delete=False,
+    ) as staging:
+        staging_path = staging.name
+    try:
+        upload.save(staging_path)
+        yield staging_path
+        os.replace(staging_path, destination)
+    finally:
+        Path(staging_path).unlink(missing_ok=True)
+
+
+def _archive_source(session_dir, filepath):
+    if not filepath:
+        return None
+    path = Path(filepath).resolve()
+    if path.parent == Path(session_dir) and path.is_file():
+        return path
+    return None
 
 # ─── Configuração de colunas ──────────────────────────────────────────────────
 # ORDEM IMPORTA: auto_map_cols para no primeiro alias que bater.
@@ -406,7 +540,7 @@ def _read_previous_client_choice(session_dir):
     path = _previous_client_meta_path(session_dir)
     if not os.path.exists(path):
         return ''
-    choice = norm_ascii(open(path, encoding='utf-8').read().strip())
+    choice = norm_ascii(Path(path).read_text(encoding='utf-8').strip())
     return choice if choice in {'totalpass', 'wellhub'} else ''
 
 def _consolidated_cache_paths(session_dir):
@@ -1025,6 +1159,7 @@ def write_wellhub_csv(wh_rows, filepath):
 
 @app.route('/')
 def index():
+    _browser_owner()
     return render_template('index.html')
 
 @app.route('/api/upload', methods=['POST'])
@@ -1035,23 +1170,20 @@ def api_upload():
     if not f.filename.lower().endswith(('.xlsx', '.xls')):
         return jsonify({'error': 'Formato inválido. Envie um arquivo .xlsx ou .xls.'}), 400
 
-    session_id  = str(uuid.uuid4())
-    session_dir = os.path.join(TEMP_DIR, session_id)
-    os.makedirs(session_dir, exist_ok=True)
+    session_id, session_dir = _new_session()
     upload_path = os.path.join(session_dir, 'source.xlsx')
-    f.save(upload_path)
-
     try:
-        xl       = excel_file_fast(upload_path)
-        auto_map = auto_map_sheets(xl)
+        with _staged_upload(f, upload_path) as staged_path, excel_file_fast(staged_path) as xl:
+            auto_map = auto_map_sheets(xl)
+            sheet_names = xl.sheet_names
         return jsonify({
             'session_id':     session_id,
-            'sheet_names':    xl.sheet_names,
+            'sheet_names':    sheet_names,
             'auto_sheet_map': auto_map,
             'filename':       f.filename,
         })
-    except Exception as e:
-        return jsonify({'error': f'Erro ao ler o arquivo: {str(e)}'}), 500
+    except Exception as error:
+        return _operation_error(error, 'Não foi possível ler o arquivo.')
 
 @app.route('/api/upload-previous', methods=['POST'])
 def api_upload_previous():
@@ -1067,83 +1199,76 @@ def api_upload_previous():
     if not f.filename.lower().endswith(('.xlsx', '.xls', '.csv')):
         return jsonify({'error': 'Formato inválido. Envie um arquivo .xlsx, .xls ou .csv.'}), 400
 
-    session_dir = os.path.join(TEMP_DIR, sid)
+    session_dir = _session_dir(sid)
     if not os.path.exists(os.path.join(session_dir, 'source.xlsx')):
         return jsonify({'error': 'Sessão expirada. Envie a base atual novamente.'}), 400
 
     ext = os.path.splitext(f.filename)[1].lower()
-    for old_ext in ('.xlsx', '.xls', '.csv'):
-        old_path = os.path.join(session_dir, f'previous_source{old_ext}')
-        if os.path.exists(old_path):
-            os.remove(old_path)
     upload_path = os.path.join(session_dir, f'previous_source{ext}')
-    f.save(upload_path)
-    with open(_previous_client_meta_path(session_dir), 'w', encoding='utf-8') as meta_f:
-        meta_f.write(previous_client)
-
     try:
-        if upload_path.lower().endswith('.csv'):
-            df = _read_previous_first_table(upload_path)
-            return jsonify({
-                'sheet_names': ['CSV'],
-                'auto_sheet_map': {},
-                'filename': f.filename,
-                'layout': 'client_csv',
-                'columns': list(df.columns),
-            })
-        xl = excel_file_fast(upload_path)
-        return jsonify({
-            'sheet_names': xl.sheet_names,
-            'auto_sheet_map': auto_map_sheets(xl),
-            'filename': f.filename,
-        })
-    except Exception as e:
-        return jsonify({'error': f'Erro ao ler a base passada: {str(e)}'}), 500
+        with _UPLOAD_LOCK:
+            with _staged_upload(f, upload_path) as staged_path:
+                result = {'filename': f.filename}
+                if ext == '.csv':
+                    df = _read_previous_first_table(staged_path)
+                    result.update(sheet_names=['CSV'], auto_sheet_map={},
+                                  layout='client_csv', columns=list(df.columns))
+                else:
+                    with excel_file_fast(staged_path) as xl:
+                        result.update(sheet_names=xl.sheet_names, auto_sheet_map=auto_map_sheets(xl))
+            for old_ext in ('.xlsx', '.xls', '.csv'):
+                if old_ext != ext:
+                    Path(session_dir, f'previous_source{old_ext}').unlink(missing_ok=True)
+            Path(_previous_client_meta_path(session_dir)).write_text(previous_client, encoding='utf-8')
+        return jsonify(result)
+    except Exception as error:
+        return _operation_error(error, 'Não foi possível ler a base passada.')
 
 @app.route('/api/get-columns', methods=['POST'])
 def api_get_columns():
-    data        = request.json
+    data        = _json_object()
     sid         = data.get('session_id')
     sheet_map   = data.get('sheet_map', {})
-    upload_path = os.path.join(TEMP_DIR, sid, 'source.xlsx')
+    session_dir = _session_dir(sid)
+    upload_path = os.path.join(session_dir, 'source.xlsx')
     if not os.path.exists(upload_path):
         return jsonify({'error': 'Sessão expirada.'}), 400
 
     try:
-        xl         = excel_file_fast(upload_path)
         sheet_data = {}
-        for grupo, sheet_name in sheet_map.items():
-            header_df = xl.parse(sheet_name, dtype=str, na_filter=False, nrows=0)
-            cols = [str(c).strip().lstrip('\ufeff') for c in header_df.columns]
-            sheet_data[grupo] = {
-                'headers':   cols,
-                'auto_map':  auto_map_cols(cols),
-                'row_count': None,
-            }
+        with excel_file_fast(upload_path) as xl:
+            for grupo, sheet_name in sheet_map.items():
+                header_df = xl.parse(sheet_name, dtype=str, na_filter=False, nrows=0)
+                cols = [str(c).strip().lstrip('\ufeff') for c in header_df.columns]
+                sheet_data[grupo] = {
+                    'headers':   cols,
+                    'auto_map':  auto_map_cols(cols),
+                    'row_count': None,
+                }
         return jsonify({'sheet_data': sheet_data})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception as error:
+        return _operation_error(error)
 
 @app.route('/api/process', methods=['POST'])
 def api_process():
-    data          = request.json
+    data          = _json_object()
     sid           = data.get('session_id')
     sheet_map     = data.get('sheet_map', {})
     previous_sheet_map = data.get('previous_sheet_map', {})
     requested_previous_client = norm_ascii(data.get('previous_client', ''))
     per_sheet_map = data.get('per_sheet_col_map', {})
-    upload_path   = os.path.join(TEMP_DIR, sid, 'source.xlsx')
+    session_dir = _session_dir(sid)
+    upload_path   = os.path.join(session_dir, 'source.xlsx')
     if not os.path.exists(upload_path):
         return jsonify({'error': 'Sessão expirada.'}), 400
 
     try:
-        session_dir = os.path.join(TEMP_DIR, sid)
         consolidated = _read_consolidated_cache(
             session_dir, sheet_map, per_sheet_map
         )
         if consolidated is None:
-            xl = excel_file_fast(upload_path)
-            consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
+            with excel_file_fast(upload_path) as xl:
+                consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
             _write_consolidated_cache(
                 session_dir, sheet_map, per_sheet_map, consolidated
             )
@@ -1154,11 +1279,11 @@ def api_process():
         totalpass_consolidated = consolidated
         wellhub_consolidated = consolidated
 
-        previous_path = _previous_source_path(os.path.join(TEMP_DIR, sid))
+        previous_path = _previous_source_path(session_dir)
         previous_used = False
         previous_process = requested_previous_client
         if previous_process not in {'totalpass', 'wellhub'}:
-            previous_process = _read_previous_client_choice(os.path.join(TEMP_DIR, sid))
+            previous_process = _read_previous_client_choice(session_dir)
         if previous_path and os.path.exists(previous_path):
             if previous_path.lower().endswith('.csv'):
                 previous_consolidated = _previous_client_layout_to_internal(
@@ -1171,15 +1296,15 @@ def api_process():
                 if '_previous_client_process' in previous_client_layout.columns:
                     previous_consolidated = previous_client_layout
                 else:
-                    prev_xl = excel_file_fast(previous_path)
-                    prev_sheet_map = previous_sheet_map or auto_map_sheets(prev_xl)
-                    for grupo, sheet_name in sheet_map.items():
-                        if grupo not in prev_sheet_map and sheet_name in prev_xl.sheet_names:
-                            prev_sheet_map[grupo] = sheet_name
-                    if prev_sheet_map:
-                        previous_consolidated = _load_and_rename(prev_xl, prev_sheet_map, per_sheet_map)
-                    else:
-                        previous_consolidated = previous_client_layout
+                    with excel_file_fast(previous_path) as prev_xl:
+                        prev_sheet_map = previous_sheet_map or auto_map_sheets(prev_xl)
+                        for grupo, sheet_name in sheet_map.items():
+                            if grupo not in prev_sheet_map and sheet_name in prev_xl.sheet_names:
+                                prev_sheet_map[grupo] = sheet_name
+                        if prev_sheet_map:
+                            previous_consolidated = _load_and_rename(prev_xl, prev_sheet_map, per_sheet_map)
+                        else:
+                            previous_consolidated = previous_client_layout
             previous_consolidated, _ = _apply_date_conversion(previous_consolidated, internal_map)
             if '_previous_client_process' in previous_consolidated.columns:
                 detected_previous_process = clean_val(previous_consolidated['_previous_client_process'].iloc[0])
@@ -1199,7 +1324,6 @@ def api_process():
             previous_used = True
 
         today_str   = date.today().strftime('%d/%m/%Y')
-        session_dir = os.path.join(TEMP_DIR, sid)
 
         tp_elig, tp_excl = apply_rules(totalpass_consolidated, internal_map, 'TotalPass', check_tp)
         wh_elig, wh_excl = apply_rules(wellhub_consolidated, internal_map, 'Wellhub',   check_wh)
@@ -1337,28 +1461,27 @@ def api_process():
             'nv': {'eligible': len(nv_rows),  'excluded': len(nv_excl),  'reasons': count_reasons(nv_excl)},
             'audit_count': len(audit_rows),
         })
-    except Exception as e:
-        import traceback
-        return jsonify({'error': str(e), 'detail': traceback.format_exc()}), 500
+    except Exception as error:
+        return _operation_error(error)
 
 @app.route('/api/preview', methods=['POST'])
 def api_preview():
-    data          = request.json
+    data          = _json_object()
     sid           = data.get('session_id')
     sheet_map     = data.get('sheet_map', {})
     per_sheet_map = data.get('per_sheet_col_map', {})
-    upload_path   = os.path.join(TEMP_DIR, sid, 'source.xlsx')
+    session_dir = _session_dir(sid)
+    upload_path   = os.path.join(session_dir, 'source.xlsx')
     if not os.path.exists(upload_path):
         return jsonify({'error': 'Sessão expirada.'}), 400
 
     try:
-        session_dir = os.path.join(TEMP_DIR, sid)
         consolidated = _read_consolidated_cache(
             session_dir, sheet_map, per_sheet_map
         )
         if consolidated is None:
-            xl = excel_file_fast(upload_path)
-            consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
+            with excel_file_fast(upload_path) as xl:
+                consolidated = _load_and_rename(xl, sheet_map, per_sheet_map)
             _write_consolidated_cache(
                 session_dir, sheet_map, per_sheet_map, consolidated
             )
@@ -1389,17 +1512,17 @@ def api_preview():
             'total': len(consolidated),
             'group_counts': group_counts,
         })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception as error:
+        return _operation_error(error)
 
 @app.route('/api/wellhub-zip/<session_id>', methods=['POST'])
 def wellhub_zip_filtered(session_id):
-    session_dir = os.path.join(TEMP_DIR, session_id)
+    session_dir = _session_dir(session_id)
     meta_path   = os.path.join(session_dir, 'wh_meta.json')
     if not os.path.exists(meta_path):
         return jsonify({'error': 'Sessão expirada.'}), 400
 
-    selected_cnpjs = set(request.json.get('cnpjs', []))
+    selected_cnpjs = set(_json_object().get('cnpjs', []))
     with open(meta_path, encoding='utf-8') as f:
         wh_file_meta = json.load(f)
 
@@ -1410,14 +1533,15 @@ def wellhub_zip_filtered(session_id):
     zip_path = os.path.join(session_dir, 'wellhub_filtrado.zip')
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for meta in selected:
-            if os.path.exists(meta['filepath']):
-                zf.write(meta['filepath'], meta['filename'])
+            path = _archive_source(session_dir, meta['filepath'])
+            if path:
+                zf.write(path, Path(meta['filename']).name)
 
     return send_file(zip_path, as_attachment=True, download_name=f'Wellhub_{len(selected)}_Empresas.zip')
 
 @app.route('/api/download/<session_id>/<file_type>')
 def api_download(session_id, file_type):
-    session_dir = os.path.join(TEMP_DIR, session_id)
+    session_dir = _session_dir(session_id)
     if file_type == 'wellhub':
         path = os.path.join(session_dir, 'wellhub_todos.zip')
         if os.path.exists(path):
@@ -1441,56 +1565,55 @@ def api_download(session_id, file_type):
 
 @app.route('/api/download/<session_id>/auditppt')
 def download_audit_ppt(session_id):
-    session_dir = os.path.join(TEMP_DIR, session_id)
+    session_dir = _session_dir(session_id)
     audit_path  = os.path.join(session_dir, 'auditoria.xlsx')
     ppt_path    = os.path.join(session_dir, 'auditoria_ppt.pptx')
     if not os.path.exists(audit_path):
         return 'Sessão expirada ou processamento não concluído.', 404
     try:
         total_base_path = os.path.join(session_dir, 'total_base.txt')
-        total_base = int(open(total_base_path).read().strip()) if os.path.exists(total_base_path) else 0
+        total_base = int(Path(total_base_path).read_text().strip()) if os.path.exists(total_base_path) else 0
         generate_ppt(audit_path, ppt_path, total_base)
         return send_file(ppt_path, as_attachment=True,
                          download_name='Auditoria_Exclusoes_BenefProcess.pptx')
-    except Exception as e:
-        import traceback
-        return f'Erro ao gerar PPT: {str(e)}\n{traceback.format_exc()}', 500
+    except Exception as error:
+        return _operation_error(error, 'Não foi possível gerar a apresentação.')
 
 
 @app.route('/api/download/<session_id>/totalpass_csv')
 def download_totalpass_csv(session_id):
-    path = os.path.join(TEMP_DIR, session_id, 'totalpass.csv')
+    path = os.path.join(_session_dir(session_id), 'totalpass.csv')
     if not os.path.exists(path): return 'Arquivo não encontrado.', 404
     return send_file(path, as_attachment=True, download_name='TotalPass_Colaboradores.csv')
 
 @app.route('/api/download/<session_id>/newvalue_csv')
 def download_newvalue_csv(session_id):
-    path = os.path.join(TEMP_DIR, session_id, 'newvalue.csv')
+    path = os.path.join(_session_dir(session_id), 'newvalue.csv')
     if not os.path.exists(path): return 'Arquivo não encontrado.', 404
     return send_file(path, as_attachment=True, download_name='NewValue_Colaboradores.csv')
 
 @app.route('/api/download/<session_id>/wellhub_csv_zip')
 def download_wellhub_csv_zip(session_id):
-    path = os.path.join(TEMP_DIR, session_id, 'wellhub_geral.csv')
+    path = os.path.join(_session_dir(session_id), 'wellhub_geral.csv')
     if not os.path.exists(path): return 'Arquivo não encontrado.', 404
     return send_file(path, as_attachment=True, download_name='Wellhub_Geral.csv')
 
 @app.route('/api/wellhub-csv-zip-filtered/<session_id>', methods=['POST'])
 def wellhub_csv_zip_filtered(session_id):
     """Download ZIP com CSVs Wellhub apenas das empresas selecionadas."""
-    session_dir    = os.path.join(TEMP_DIR, session_id)
+    session_dir    = _session_dir(session_id)
     meta_path      = os.path.join(session_dir, 'wh_meta.json')
     if not os.path.exists(meta_path): return jsonify({'error': 'Sessão expirada.'}), 400
-    selected_cnpjs = set(request.json.get('cnpjs', []))
+    selected_cnpjs = set(_json_object().get('cnpjs', []))
     with open(meta_path, encoding='utf-8') as f: wh_file_meta = json.load(f)
     selected = [m for m in wh_file_meta if m['cnpj'] in selected_cnpjs]
     if not selected: return jsonify({'error': 'Nenhuma empresa selecionada.'}), 400
     zip_path = os.path.join(session_dir, 'wellhub_csv_filtrado.zip')
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for meta in selected:
-            csv_p = meta.get('csv_path', '')
-            if os.path.exists(csv_p):
-                zf.write(csv_p, meta.get('csv_name', os.path.basename(csv_p)))
+            path = _archive_source(session_dir, meta.get('csv_path'))
+            if path:
+                zf.write(path, Path(meta.get('csv_name', path.name)).name)
     return send_file(zip_path, as_attachment=True,
                      download_name=f'Wellhub_CSV_{len(selected)}_Empresas.zip')
 
@@ -1597,24 +1720,23 @@ def api_upload_mar_saude():
     f = request.files['file']
     if not f.filename.lower().endswith(('.xlsx', '.xls')):
         return jsonify({'error': 'Envie um arquivo .xlsx ou .xls.'}), 400
-    sid         = str(uuid.uuid4())
-    session_dir = os.path.join(TEMP_DIR, sid)
-    os.makedirs(session_dir, exist_ok=True)
+    sid, session_dir = _new_session()
     upload_path = os.path.join(session_dir, 'ms_source.xlsx')
-    f.save(upload_path)
     try:
-        xl = excel_file_fast(upload_path)
-        return jsonify({'session_id': sid, 'sheet_names': xl.sheet_names, 'filename': f.filename})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        with _staged_upload(f, upload_path) as staged_path, excel_file_fast(staged_path) as xl:
+            sheet_names = xl.sheet_names
+        return jsonify({'session_id': sid, 'sheet_names': sheet_names, 'filename': f.filename})
+    except Exception as error:
+        return _operation_error(error)
 
 @app.route('/api/get-columns-mar-saude', methods=['POST'])
 def api_get_columns_mar_saude():
     """Retorna somente cabeçalhos e auto-mapeamento. Não processa a planilha."""
-    data        = request.json or {}
+    data        = _json_object()
     sid         = data.get('session_id')
     sheet_name  = data.get('sheet_name')
-    upload_path = os.path.join(TEMP_DIR, sid, 'ms_source.xlsx')
+    session_dir = _session_dir(sid)
+    upload_path = os.path.join(session_dir, 'ms_source.xlsx')
     if not os.path.exists(upload_path):
         return jsonify({'error': 'Sessão expirada.'}), 400
     try:
@@ -1623,17 +1745,18 @@ def api_get_columns_mar_saude():
         df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
         cols = list(df.columns)
         return jsonify({'headers': cols, 'auto_map': _auto_map_ms(cols), 'row_count': None})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception as error:
+        return _operation_error(error)
 
 @app.route('/api/process-mar-saude', methods=['POST'])
 def api_process_mar_saude():
     """Processa Mar Saúde. Regra: remove PJ por Nome Sindicato ou Desc. Tipo de Vínculo."""
-    data        = request.json or {}
+    data        = _json_object()
     sid         = data.get('session_id')
     sheet_name  = data.get('sheet_name')
     col_map_usr = data.get('col_map', {}) or {}
-    upload_path = os.path.join(TEMP_DIR, sid, 'ms_source.xlsx')
+    session_dir = _session_dir(sid)
+    upload_path = os.path.join(session_dir, 'ms_source.xlsx')
     if not os.path.exists(upload_path):
         return jsonify({'error': 'Sessão expirada.'}), 400
     try:
@@ -1679,7 +1802,6 @@ def api_process_mar_saude():
         ms_rows = [_to_ms_row(r, final_map) for r in eligible]
         ex_rows = [_to_ms_row(r, final_map) for r in excluded]
 
-        session_dir = os.path.join(TEMP_DIR, sid)
         write_styled_excel(ms_rows, os.path.join(session_dir, 'ms_output.xlsx'),
                            'Mar Saúde', MAR_SAUDE_COLS)
         _write_ms_csv(ms_rows, os.path.join(session_dir, 'ms_output.csv'))
@@ -1691,27 +1813,26 @@ def api_process_mar_saude():
             'eligible': len(ms_rows),
             'excluded': len(ex_rows),
         })
-    except Exception as e:
-        import traceback
-        return jsonify({'error': str(e), 'detail': traceback.format_exc()}), 500
+    except Exception as error:
+        return _operation_error(error)
 
 @app.route('/api/download/<session_id>/ms_excel')
 def download_ms_excel(session_id):
-    path = os.path.join(TEMP_DIR, session_id, 'ms_output.xlsx')
+    path = os.path.join(_session_dir(session_id), 'ms_output.xlsx')
     if os.path.exists(path):
         return send_file(path, as_attachment=True, download_name='MarSaude_Elegiveis.xlsx')
     return 'Arquivo não encontrado.', 404
 
 @app.route('/api/download/<session_id>/ms_csv')
 def download_ms_csv(session_id):
-    path = os.path.join(TEMP_DIR, session_id, 'ms_output.csv')
+    path = os.path.join(_session_dir(session_id), 'ms_output.csv')
     if os.path.exists(path):
         return send_file(path, as_attachment=True, download_name='MarSaude_Elegiveis.csv')
     return 'Arquivo não encontrado.', 404
 
 @app.route('/api/download/<session_id>/ms_audit')
 def download_ms_audit(session_id):
-    path = os.path.join(TEMP_DIR, session_id, 'ms_audit.xlsx')
+    path = os.path.join(_session_dir(session_id), 'ms_audit.xlsx')
     if os.path.exists(path):
         return send_file(path, as_attachment=True, download_name='MarSaude_Excluidos.xlsx')
     return 'Arquivo não encontrado.', 404
@@ -2338,32 +2459,37 @@ def api_upload_expert():
     source_type = request.form.get('source_type', 'ativos')
     if source_type not in ('ativos', 'desligados'):
         source_type = 'ativos'
-    sid = request.form.get('session_id') or str(uuid.uuid4())
-    session_dir = os.path.join(TEMP_DIR, sid)
-    os.makedirs(session_dir, exist_ok=True)
+    sid = request.form.get('session_id')
+    if sid is None:
+        sid, session_dir = _new_session()
+    else:
+        session_dir = _session_dir(sid)
     ext = os.path.splitext(f.filename)[1].lower()
     upload_path = os.path.join(session_dir, f'{_expert_source_prefix(source_type)}{ext}')
-    f.save(upload_path)
     try:
-        if ext == '.csv':
-            sheet_names = ['Planilha1']
-        else:
-            sheet_names = excel_file_fast(upload_path).sheet_names
+        with _UPLOAD_LOCK:
+            with _staged_upload(f, upload_path) as staged_path:
+                if ext == '.csv':
+                    sheet_names = ['Planilha1']
+                else:
+                    with excel_file_fast(staged_path) as xl:
+                        sheet_names = xl.sheet_names
+            for old_ext in ('.xlsx', '.xls', '.csv'):
+                if old_ext != ext:
+                    Path(session_dir, f'{_expert_source_prefix(source_type)}{old_ext}').unlink(missing_ok=True)
         return jsonify({'session_id': sid, 'sheet_names': sheet_names,
                         'filename': f.filename, 'ext': ext})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception as error:
+        return _operation_error(error)
 
 
 @app.route('/api/get-columns-expert', methods=['POST'])
 def api_get_columns_expert():
-    data        = request.json
+    data        = _json_object()
     sid         = data.get('session_id')
     sheet_name  = data.get('sheet_name', 'Planilha1')
     source_type = data.get('source_type', 'ativos')
-    session_dir = os.path.join(TEMP_DIR, sid)
-    if not os.path.isdir(session_dir):
-        return jsonify({'error': 'Sessão expirada.'}), 400
+    session_dir = _session_dir(sid)
     src = _find_expert_source(session_dir, source_type)
     if not src:
         return jsonify({'error': 'Arquivo não encontrado.'}), 400
@@ -2371,22 +2497,20 @@ def api_get_columns_expert():
         df = _read_expert_header(src, sheet_name)
         cols = [str(c).strip() for c in df.columns]
         return jsonify({'headers': cols, 'auto_map': _auto_map_expert(cols)})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception as error:
+        return _operation_error(error)
 
 
 @app.route('/api/process-expert', methods=['POST'])
 def api_process_expert():
-    data        = request.json
+    data        = _json_object()
     sid         = data.get('session_id')
     active_sheet_name   = data.get('active_sheet_name') or data.get('sheet_name', 'Planilha1')
     inactive_sheet_name = data.get('inactive_sheet_name') or data.get('sheet_name', 'Planilha1')
     col_map_usr = data.get('col_map', {})
     inactive_start_date = data.get('inactive_start_date') or ''
     inactive_end_date   = data.get('inactive_end_date') or ''
-    session_dir = os.path.join(TEMP_DIR, sid)
-    if not os.path.isdir(session_dir):
-        return jsonify({'error': 'Sessão expirada.'}), 400
+    session_dir = _session_dir(sid)
     active_src = _find_expert_source(session_dir, 'ativos')
     inactive_src = _find_expert_source(session_dir, 'desligados')
     if not active_src:
@@ -2404,8 +2528,11 @@ def api_process_expert():
                 return jsonify({
                     'error': 'Para filtrar desligados por período, mapeie a coluna "Data de desligamento/demissão".'
                 }), 400
-            start_dt = _parse_expert_filter_date(inactive_start_date, 'Data inicial dos desligados')
-            end_dt = _parse_expert_filter_date(inactive_end_date, 'Data final dos desligados')
+            try:
+                start_dt = _parse_expert_filter_date(inactive_start_date, 'Data inicial dos desligados')
+                end_dt = _parse_expert_filter_date(inactive_end_date, 'Data final dos desligados')
+            except ValueError:
+                return jsonify({'error': 'Informe datas válidas para o período dos desligados.'}), 400
             if start_dt is not None and end_dt is not None and start_dt > end_dt:
                 return jsonify({'error': 'A data inicial dos desligados não pode ser maior que a data final.'}), 400
 
@@ -2579,38 +2706,37 @@ def api_process_expert():
             'reasons': count_reasons(excluidos_rows),
             'ppt_available': ppt_ok,
         })
-    except Exception as e:
-        import traceback
-        return jsonify({'error': str(e), 'detail': traceback.format_exc()}), 500
+    except Exception as error:
+        return _operation_error(error)
 
 
 @app.route('/api/download/<session_id>/expert_ativos_excel')
 def download_expert_ativos_excel(session_id):
-    p = os.path.join(TEMP_DIR, session_id, 'expert_ativos.xlsx')
+    p = os.path.join(_session_dir(session_id), 'expert_ativos.xlsx')
     if not os.path.exists(p): return 'Não encontrado.', 404
     return send_file(p, as_attachment=True, download_name='Expert_Ativos.xlsx')
 
 @app.route('/api/download/<session_id>/expert_inativos_excel')
 def download_expert_inativos_excel(session_id):
-    p = os.path.join(TEMP_DIR, session_id, 'expert_inativos.xlsx')
+    p = os.path.join(_session_dir(session_id), 'expert_inativos.xlsx')
     if not os.path.exists(p): return 'Não encontrado.', 404
     return send_file(p, as_attachment=True, download_name='Expert_Inativos.xlsx')
 
 @app.route('/api/download/<session_id>/expert_ativos_csv')
 def download_expert_ativos_csv(session_id):
-    p = os.path.join(TEMP_DIR, session_id, 'expert_ativos.csv')
+    p = os.path.join(_session_dir(session_id), 'expert_ativos.csv')
     if not os.path.exists(p): return 'Não encontrado.', 404
     return send_file(p, as_attachment=True, download_name='Expert_Ativos.csv')
 
 @app.route('/api/download/<session_id>/expert_inativos_csv')
 def download_expert_inativos_csv(session_id):
-    p = os.path.join(TEMP_DIR, session_id, 'expert_inativos.csv')
+    p = os.path.join(_session_dir(session_id), 'expert_inativos.csv')
     if not os.path.exists(p): return 'Não encontrado.', 404
     return send_file(p, as_attachment=True, download_name='Expert_Inativos.csv')
 
 @app.route('/api/download/<session_id>/expert_ppt')
 def download_expert_ppt(session_id):
-    session_dir = os.path.join(TEMP_DIR, session_id)
+    session_dir = _session_dir(session_id)
     p = os.path.join(session_dir, 'expert_ppt.pptx')
     if not os.path.exists(p):
         ativos_path = os.path.join(session_dir, 'expert_ativos.xlsx')
@@ -2622,8 +2748,8 @@ def download_expert_ppt(session_id):
             inativos = read_excel_fast(inativos_path, dtype=str).fillna('').to_dict('records')
             if not _generate_expert_ppt(ativos, inativos, [], p):
                 return 'Dependência ausente para gerar PPT. Instale python-pptx.', 500
-        except Exception as e:
-            return f'Erro ao gerar PPT Expert: {str(e)}', 500
+        except Exception as error:
+            return _operation_error(error, 'Não foi possível gerar a apresentação.')
     return send_file(p, as_attachment=True, download_name='Expert_Apresentacao_Executiva.pptx')
 
 # ══════════════════════════════════════════════════════════════════════════════

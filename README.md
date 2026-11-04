@@ -124,7 +124,9 @@ Esses arquivos não fazem parte do código-fonte e não devem ser enviados para 
 
 - O processamento é local.
 - Nenhuma planilha é enviada para serviços externos.
-- Arquivos de saída ficam na pasta `temp/` do projeto.
+- O aplicativo aceita conexões locais. Cada sessão de processamento fica vinculada ao navegador que enviou a base, por meio de um cookie.
+- Depois de atualizar a partir de uma versão anterior, reenvie as bases para criar sessões com proprietário. Limpar os cookies ou reiniciar o servidor também exige um novo upload. Para manter a assinatura do cookie entre reinicializações, configure `BENEFPROCESS_SECRET_KEY` com um valor secreto e estável.
+- Bases e arquivos de saída ficam na pasta `temp/` do projeto até serem removidos manualmente.
 - O repositório mantém apenas código, dependências e documentação.
 
 ## Dependências Principais

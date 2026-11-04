@@ -1222,9 +1222,15 @@ function continueAfterUpload() {
   goStep(2);
 }
 
+function escapeHtml(value) {
+  const span = document.createElement('span');
+  span.textContent = value;
+  return span.innerHTML.replace(/"/g, '&quot;');
+}
+
 function renderSheetSelects() {
   document.getElementById('step2Sub').innerHTML =
-    `<strong>${S.filename}</strong> · ${S.sheetNames.length} aba(s) encontrada(s). Confirme ou ajuste o mapeamento abaixo.`;
+    `<strong>${escapeHtml(S.filename)}</strong> · ${S.sheetNames.length} aba(s) encontrada(s). Confirme ou ajuste o mapeamento abaixo.`;
 
   ['Stefanini', 'Topaz', 'IHM'].forEach(g => {
     const sel = document.getElementById('sel-' + g);
@@ -1421,7 +1427,7 @@ async function renderPreview() {
         tr.appendChild(td);
       });
       const td = document.createElement('td');
-      td.innerHTML = `<span class="badge">${row._grupo}</span>`;
+      td.innerHTML = `<span class="badge">${escapeHtml(row._grupo)}</span>`;
       tr.appendChild(td);
       tbody.appendChild(tr);
     });
@@ -1513,7 +1519,7 @@ function renderResults(data) {
     compHTML = `<div class="reasons-box" style="margin-bottom:14px">
       <div class="reasons-title">${companies.length} EMPRESA(S) · 1 ARQUIVO POR CNPJ</div>
       ${companies.map(c=>`<div class="reason-row">
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:75%" title="${c.empresa}">${c.empresa}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:75%" title="${escapeHtml(c.empresa)}">${escapeHtml(c.empresa)}</span>
         <span style="font-weight:700;color:#475569">${c.count}</span>
       </div>`).join('')}
     </div>`;
@@ -1591,7 +1597,7 @@ async function uploadMs(file) {
     MS.sessionId  = data.session_id;
     MS.sheetNames = data.sheet_names;
     const sel = document.getElementById('msSheetSel');
-    sel.innerHTML = MS.sheetNames.map(s => `<option value="${s}">${s}</option>`).join('');
+    sel.replaceChildren(...MS.sheetNames.map(name => new Option(name, name)));
     document.getElementById('msMapping').style.display = 'block';
     document.getElementById('msResults').style.display  = 'none';
   } catch(e) { hideLoading(); showAlert('Erro: ' + e.message); }
@@ -1758,13 +1764,13 @@ async function uploadExpert(file, sourceType) {
       EX.inactiveUploaded = true;
       document.getElementById('expertInactiveFileName').textContent = data.filename;
       const sel = document.getElementById('expertInactiveSheetSel');
-      sel.innerHTML = EX.inactiveSheetNames.map(s => `<option value="${s}">${s}</option>`).join('');
+      sel.replaceChildren(...EX.inactiveSheetNames.map(name => new Option(name, name)));
     } else {
       EX.activeSheetNames = data.sheet_names;
       EX.activeUploaded = true;
       document.getElementById('expertActiveFileName').textContent = data.filename;
       const sel = document.getElementById('expertActiveSheetSel');
-      sel.innerHTML = EX.activeSheetNames.map(s => `<option value="${s}">${s}</option>`).join('');
+      sel.replaceChildren(...EX.activeSheetNames.map(name => new Option(name, name)));
     }
     if (EX.activeUploaded) document.getElementById('expertMapping').style.display = 'block';
     document.getElementById('expertResults').style.display  = 'none';
